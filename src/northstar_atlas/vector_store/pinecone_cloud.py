@@ -72,27 +72,37 @@ def _unique_object(pairs):
 
 
 def load_settings(root: Path, *, environ=None) -> CloudSettings:
+    """Use a complete environment only when no local credential file exists."""
     try:
         root = validate_project_root(root)
     except ValueError:
         raise CloudError("invalid or unauthorized project root/corpus") from None
     env = os.environ if environ is None else environ
     path = local_path(root, ".env")
-    ignored = subprocess.run(["git", "check-ignore", "-q", "--", ".env"], cwd=root, capture_output=True)
-    tracked = subprocess.run(["git", "ls-files", "-z", "--", ".env"], cwd=root, capture_output=True)
-    if ignored.returncode != 0 or tracked.returncode != 0 or tracked.stdout:
-        raise CloudError(".env must be ignored and untracked/unstaged before credentials are loaded")
+    has_file = path.exists()
+    if has_file:
+        ignored = subprocess.run(["git", "check-ignore", "-q", "--", ".env"], cwd=root, capture_output=True)
+        tracked = subprocess.run(["git", "ls-files", "-z", "--", ".env"], cwd=root, capture_output=True)
+        if ignored.returncode != 0 or tracked.returncode != 0 or tracked.stdout:
+            raise CloudError(".env must be ignored and untracked/unstaged before credentials are loaded")
     wanted = ("PINECONE_API_KEY", "PINECONE_INDEX_NAME", "PINECONE_CLOUD", "PINECONE_REGION")
     values = {}
     try:
-        for line in path.read_text().splitlines():
-            name, separator, value = line.strip().partition("=")
-            if name not in wanted: continue
-            parts = shlex.split(value, comments=True, posix=True)
-            if not separator or name in values or len(parts) != 1:
-                raise ValueError
-            values[name] = parts[0]
-        if set(values) != set(wanted): raise ValueError
+        if has_file:
+            for line in path.read_text().splitlines():
+                name, separator, value = line.strip().partition("=")
+                if name not in wanted: continue
+                parts = shlex.split(value, comments=True, posix=True)
+                if not separator or name in values or len(parts) != 1:
+                    raise ValueError
+                values[name] = parts[0]
+        else:
+            # Check completeness before accessing any credential value.
+            if not all(name in env for name in wanted): raise ValueError
+            values = {name: env[name] for name in wanted}
+        if (set(values) != set(wanted)
+                or any(not isinstance(value, str) or not value.strip() for value in values.values())):
+            raise ValueError
         if any(name in env and env[name] != value for name, value in values.items()):
             raise ValueError
     except (OSError, UnicodeError, ValueError):

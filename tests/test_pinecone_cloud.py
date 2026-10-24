@@ -1,8 +1,10 @@
 """Credential and control-plane tests never contact Pinecone."""
 
 from copy import deepcopy
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from checkout_fixture import checkout
+import io
 import json
 import os
 from pathlib import Path
@@ -22,6 +24,14 @@ TARGET = {"name": "northstar-atlas-dev", "cloud": "azure", "region": "eastus2",
           "project_id": "00000000-0000-4000-8000-000000000001", "plan": "Builder"}
 
 PROJECT_ID = TARGET["project_id"]
+ENVIRONMENT = {"PINECONE_API_KEY": KEY, "PINECONE_INDEX_NAME": "northstar-atlas-dev",
+               "PINECONE_CLOUD": "azure", "PINECONE_REGION": "eastus2"}
+
+
+class UnreadableEnvironment(dict):
+    """Prove invalid roots/files/incomplete inputs fail before reading secrets."""
+    def __getitem__(self, key):
+        raise AssertionError("environment values must not be accessed")
 
 
 def cloud_settings(key=KEY):
@@ -64,16 +74,142 @@ class CloudTests(unittest.TestCase):
         (self.root / ".env").write_text(f"PINECONE_API_KEY={KEY}\nPINECONE_INDEX_NAME=northstar-atlas-dev\nPINECONE_CLOUD=azure\nPINECONE_REGION=eastus2\n")
         self.settings = cloud_settings()
 
-    def load(self, ignored=True, tracked=False):
+    def load(self, ignored=True, tracked=False, *, environ=None):
         def git(args, **kwargs):
             from subprocess import CompletedProcess
             return CompletedProcess(args, 0 if ignored else 1, b".env\0" if tracked and "ls-files" in args else b"", b"")
         with patch("northstar_atlas.vector_store.pinecone_cloud.subprocess.run", side_effect=git):
-            return load_settings(self.root, environ={})
+            return load_settings(self.root, environ={} if environ is None else environ)
 
     def test_secure_loading_no_key_repr(self):
         self.assertEqual(self.load().api_key, KEY)
         self.assertNotIn(KEY, repr(self.load()))
+
+    def test_complete_environment_without_file_or_git(self):
+        (self.root / '.env').unlink()
+        with patch('northstar_atlas.vector_store.pinecone_cloud.subprocess.run',
+                   side_effect=AssertionError('environment-only loading must not require Git')):
+            settings = load_settings(self.root, environ=ENVIRONMENT)
+        self.assertEqual(settings, self.settings)
+        self.assertFalse((self.root / '.env').exists())
+
+    def test_environment_only_uses_process_variables_by_default(self):
+        (self.root / '.env').unlink()
+        with patch.dict(os.environ, ENVIRONMENT), \
+             patch('northstar_atlas.vector_store.pinecone_cloud.subprocess.run',
+                   side_effect=AssertionError('environment-only loading must not require Git')):
+            self.assertEqual(load_settings(self.root), self.settings)
+
+    def test_environment_only_rejects_every_incomplete_subset_before_values(self):
+        (self.root / '.env').unlink()
+        keys = tuple(ENVIRONMENT)
+        for mask in range(2 ** len(keys) - 1):
+            partial = UnreadableEnvironment({key: ENVIRONMENT[key] for i, key in enumerate(keys)
+                                             if mask & (1 << i)})
+            with self.subTest(present=tuple(partial)), self.assertRaises(CloudError):
+                self.load(environ=partial)
+
+    def test_environment_only_rejects_empty_or_nonstring_values(self):
+        (self.root / '.env').unlink()
+        for name in ENVIRONMENT:
+            for value in ('', ' ', '\t', None, 42):
+                with self.subTest(name=name, value=value), self.assertRaises(CloudError):
+                    self.load(environ={**ENVIRONMENT, name: value})
+
+    def test_environment_only_requires_matching_explicit_target(self):
+        (self.root / '.env').unlink()
+        for name, value in (('PINECONE_INDEX_NAME', 'another-index'),
+                            ('PINECONE_CLOUD', 'aws'), ('PINECONE_REGION', 'us-east-1')):
+            with self.subTest(name=name), self.assertRaises(CloudError):
+                self.load(environ={**ENVIRONMENT, name: value})
+        for raw in ('{}', json.dumps({**TARGET, 'project_id': 'invalid'})):
+            self.target_path.write_text(raw)
+            with self.assertRaises(CloudError): self.load(environ=ENVIRONMENT)
+        self.target_path.unlink()
+        with self.assertRaises(CloudError): self.load(environ=ENVIRONMENT)
+
+    def test_existing_file_fallback_and_matching_environment(self):
+        self.assertEqual(self.load(), self.settings)
+        self.assertEqual(self.load(environ=ENVIRONMENT), self.settings)
+        self.assertEqual(self.load(environ={'PINECONE_REGION': 'eastus2'}), self.settings)
+
+    def test_existing_file_rejects_conflicting_and_empty_process_values(self):
+        for name, original in ENVIRONMENT.items():
+            for value in ('', original + '_different'):
+                with self.subTest(name=name), self.assertRaises(CloudError) as raised:
+                    self.load(environ={name: value})
+                self.assertNotIn(KEY, str(raised.exception))
+
+    def test_environment_cannot_fill_or_override_invalid_existing_file(self):
+        path = self.root / '.env'
+        original = path.read_text()
+        for raw in ('', '\n'.join(original.splitlines()[1:]),
+                    original + 'PINECONE_REGION=eastus2\n',
+                    original.replace(KEY, '"unterminated')):
+            path.write_text(raw)
+            with self.assertRaises(CloudError): self.load(environ=ENVIRONMENT)
+
+    def test_existing_file_git_guards_precede_credential_access(self):
+        read_text = Path.read_text
+        def guarded_read(path, *args, **kwargs):
+            if path == self.root / '.env':
+                raise AssertionError('unsafe credential file must not be read')
+            return read_text(path, *args, **kwargs)
+        with patch.object(Path, 'read_text', guarded_read):
+            for flags in ({'ignored': False}, {'tracked': True}):
+                with self.subTest(flags=flags), self.assertRaises(CloudError):
+                    self.load(**flags, environ=UnreadableEnvironment(ENVIRONMENT))
+
+    def test_invalid_root_precedes_environment_credential_access(self):
+        with self.assertRaises(CloudError):
+            load_settings(self.root / 'missing', environ=UnreadableEnvironment(ENVIRONMENT))
+        (self.root / 'data/corpus_manifest.json').write_text('{}')
+        with self.assertRaises(CloudError):
+            load_settings(self.root, environ=UnreadableEnvironment(ENVIRONMENT))
+
+    def test_dangling_credential_symlink_is_not_environment_only_absence(self):
+        path = self.root / '.env'
+        path.unlink()
+        path.symlink_to(self.root / 'missing-secret-file')
+        with self.assertRaises(CloudError):
+            load_settings(self.root, environ=UnreadableEnvironment(ENVIRONMENT))
+
+    def test_environment_only_preserves_owner_and_credential_binding(self):
+        (self.root / '.env').unlink()
+        settings = self.load(environ=ENVIRONMENT)
+        with self.assertRaises(CloudError): check_confirmation(self.root, settings)
+        record_confirmation(self.root, settings, project_id=PROJECT_ID)
+        check_confirmation(self.root, self.load(environ=ENVIRONMENT))
+        changed_key = self.load(environ={**ENVIRONMENT, 'PINECONE_API_KEY': KEY + '_rotated'})
+        with self.assertRaises(CloudError): check_confirmation(self.root, changed_key)
+        self.target_path.write_text(json.dumps({**TARGET, 'project_id': '00000000-0000-4000-8000-000000000002'}))
+        changed_project = self.load(environ=ENVIRONMENT)
+        with self.assertRaises(CloudError): check_confirmation(self.root, changed_project)
+
+    def test_environment_only_redacts_repr_errors_and_output(self):
+        (self.root / '.env').unlink()
+        output = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(output), self.assertNoLogs(level='DEBUG'):
+            settings = self.load(environ=ENVIRONMENT)
+            with self.assertRaises(CloudError) as raised:
+                self.load(environ={**ENVIRONMENT, 'PINECONE_API_KEY': KEY + '!'})
+        self.assertNotIn(KEY, repr(settings))
+        self.assertNotIn(KEY, str(raised.exception))
+        self.assertEqual(output.getvalue(), '')
+
+    def test_environment_only_invalid_configuration_stops_before_sdk(self):
+        from northstar_atlas import pinecone
+        (self.root / '.env').unlink()
+        for values in ({}, {'PINECONE_API_KEY': KEY},
+                       {**ENVIRONMENT, 'PINECONE_REGION': 'us-east-1'}, ENVIRONMENT):
+            # The final case has valid settings but no owner confirmation.
+            with self.subTest(names=tuple(values)), \
+                 patch.dict(os.environ, {'NORTHSTAR_PROJECT_ROOT': str(self.root), **values}, clear=True), \
+                 patch.object(Path, 'cwd', return_value=self.root), \
+                 patch.object(pinecone, 'sdk_client', side_effect=AssertionError('cloud forbidden')) as client, \
+                 redirect_stderr(io.StringIO()):
+                self.assertEqual(pinecone.main(['status']), 1)
+                client.assert_not_called()
 
     def test_identity_must_be_explicit_not_inferred_from_credentials(self):
         self.target_path.unlink()
