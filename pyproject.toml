@@ -1,0 +1,36 @@
+[project]
+name = "northstar-atlas"
+version = "0.1.0"
+description = "An enterprise knowledge and operations assistant for document-grounded answers."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "chromadb==1.5.9",
+    "numpy==1.26.4",
+    "sentence-transformers==3.4.1",
+    "torch==2.2.2",
+    "transformers==4.48.3",
+]
+
+[project.optional-dependencies]
+pinecone = [
+    "pinecone==10.0.0",
+]
+llm = [
+    "httpx==0.28.1",
+]
+ui = [
+    "streamlit==1.66.1",
+]
+
+[build-system]
+requires = ["uv_build==0.12.23"]
+build-backend = "uv_build"
+
+[tool.uv]
+# The development machine needs Intel macOS wheels, including ONNX Runtime.
+required-environments = ["sys_platform == 'darwin' and platform_machine == 'x86_64'"]
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true

@@ -1,0 +1,23 @@
+# Nonsecret project settings. Do not put credentials here.
+[server]
+address = "127.0.0.1"
+headless = true
+showEmailPrompt = false
+fileWatcherType = "none"
+enableCORS = true
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+showErrorDetails = "none"
+toolbarMode = "viewer"
+
+[theme]
+base = "light"
+primaryColor = "#255B99"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F5FA"
+textColor = "#172B44"
+font = "sans serif"

@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "hash_algorithm": "sha256",
+  "filename_base": "repository_root",
+  "policies": [
+    {
+      "document_id": "HR-001",
+      "title": "Employee Role Change & Offboarding Policy",
+      "filename": "data/policies/HR-001.md",
+      "department": "Human Resources",
+      "version": "1.0",
+      "status": "Approved (Synthetic)",
+      "effective_date": "2026-10-01",
+      "classification": "Internal",
+      "language": "English",
+      "content_hash": "cca217a049003e96ee8d84f344334498d1b3a08225fd56c889b5fe8734f7710d"
+    },
+    {
+      "document_id": "IT-001",
+      "title": "Identity & Access Management Policy",
+      "filename": "data/policies/IT-001.md",
+      "department": "IT Operations",
+      "version": "0.1",
+      "status": "Draft — Proposed (Synthetic)",
+      "effective_date": null,
+      "classification": "Internal",
+      "language": "English",
+      "content_hash": "16c34d6cf1aea8fdac1c58dfb8dfcf4671c88801249c210716d039a017d78706"
+    },
+    {
+      "document_id": "PLAT-001",
+      "title": "Production Deployment & Change Management Policy",
+      "filename": "data/policies/PLAT-001.md",
+      "department": "Platform Engineering / DevOps",
+      "version": "0.1",
+      "status": "Draft — Proposed (Synthetic)",
+      "effective_date": null,
+      "classification": "Internal",
+      "language": "English",
+      "content_hash": "00e1edff2a7101dc0681b45275b1ae3a684402c0a182e220e8ce1a6d8387d443"
+    },
+    {
+      "document_id": "SRE-001",
+      "title": "Incident Response & Escalation Policy",
+      "filename": "data/policies/SRE-001.md",
+      "department": "Site Reliability Engineering",
+      "version": "0.1",
+      "status": "Draft — Proposed (Synthetic)",
+      "effective_date": null,
+      "classification": "Internal",
+      "language": "English",
+      "content_hash": "735770ac9486edfc5d4a9f5b1aff3293235b3d286e44ea950e845ddd8ca3c3e8"
+    },
+    {
+      "document_id": "SEC-001",
+      "title": "Privileged Access & MFA Policy",
+      "filename": "data/policies/SEC-001.md",
+      "department": "Information Security",
+      "version": "0.1",
+      "status": "Draft — Proposed (Synthetic)",
+      "effective_date": null,
+      "classification": "Internal",
+      "language": "English",
+      "content_hash": "7aadf7df62e2b3d2ae2f8017817ed8ace504c4e3a15ba9b13dbe529f54f8ae12"
+    },
+    {
+      "document_id": "COMP-001",
+      "title": "Access Review & Audit Evidence Policy",
+      "filename": "data/policies/COMP-001.md",
+      "department": "Compliance",
+      "version": "0.1",
+      "status": "Draft — Proposed (Synthetic)",
+      "effective_date": null,
+      "classification": "Internal",
+      "language": "English",
+      "content_hash": "986cca527c4a0d08663e79bc03a4c389e965436f10509af44964755cc07c0d46"
+    }
+  ]
+}

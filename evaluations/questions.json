@@ -1,0 +1,531 @@
+{
+  "schema_version": 1,
+  "dataset_id": "northstar-atlas-m1.8",
+  "dataset_version": "0.1",
+  "corpus_manifest": "data/corpus_manifest.json",
+  "corpus_manifest_sha256": "1c6efd57db22e900da7118eca62f8f075d96e5b846c1a30e3889628cd23860b1",
+  "questions": [
+    {
+      "question_id": "EVAL-001",
+      "category": "A",
+      "question": "When must HR notify IT about a planned internal transfer, and what changes for an urgent transfer without advance notice?",
+      "retrieval_mode": "approved_only",
+      "expected_behavior": "answer",
+      "expected_answer_summary": "Under HR-001 v1.0, Approved (Synthetic), HR must notify IT at least two business days before a planned internal transfer. For an urgent transfer without advance notice, HR notifies IT as soon as the change is approved and marks the request urgent.",
+      "required_evidence": [
+        {
+          "document_id": "HR-001",
+          "section_id": "4.2"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "At least two business days before a planned internal transfer.",
+        "Urgent treatment applies to transfers without advance notice; notification follows approval as soon as it occurs.",
+        "The request must be identified as urgent."
+      ],
+      "forbidden_inferences": [
+        "Two calendar days is equivalent to two business days.",
+        "Urgent transfers have a fixed retrospective notice period.",
+        "Every short-notice transfer automatically qualifies as urgent."
+      ],
+      "notes": "Direct lookup; preserve both branches of the notification rule. Do not supply a business-day calendar absent from the corpus."
+    },
+    {
+      "question_id": "EVAL-002",
+      "category": "A",
+      "question": "By when must access from an employee's previous role be removed after a transfer, and what is the exception boundary?",
+      "retrieval_mode": "approved_only",
+      "expected_behavior": "answer",
+      "expected_answer_summary": "HR-001 v1.0, Approved (Synthetic), requires IT to review previous-role access and remove access no longer required no later than the end of the transfer's effective business day. Temporary exceptions must follow IT-001 and applicable security policies. Approved-only evidence does not establish an effective exception workflow or authorize a particular extension.",
+      "required_evidence": [
+        {
+          "document_id": "HR-001",
+          "section_id": "4.3"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Removal applies to previous-role access that is no longer required, following IT review.",
+        "The deadline is the end of the transfer's effective business day.",
+        "HR refers temporary exceptions to IT-001 and applicable security policies; the reference does not approve an extension."
+      ],
+      "forbidden_inferences": [
+        "Every previous-role permission must be removed regardless of continuing need.",
+        "The deadline is a fixed number of hours after transfer.",
+        "The draft IT exception workflow is an effective approved rule.",
+        "A manager can automatically extend previous access."
+      ],
+      "notes": "Only HR evidence is eligible. Mention the referral without retrieving draft procedures as approved evidence."
+    },
+    {
+      "question_id": "EVAL-003",
+      "category": "A",
+      "question": "When must IT disable a departing employee's access, including an urgent involuntary termination?",
+      "retrieval_mode": "approved_only",
+      "expected_behavior": "answer",
+      "expected_answer_summary": "HR-001 v1.0, Approved (Synthetic), requires IT to disable access no later than the approved termination effective time. For urgent involuntary termination, HR and IT coordinate disablement at the approved separation time.",
+      "required_evidence": [
+        {
+          "document_id": "HR-001",
+          "section_id": "5.2"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Use the approved termination effective time, not a generic end-of-day deadline.",
+        "Urgent involuntary termination requires HR/IT coordination at the approved separation time."
+      ],
+      "forbidden_inferences": [
+        "There is an automatic grace period.",
+        "Disablement can wait until the end of the day regardless of the approved time.",
+        "Urgent termination always means immediate disablement independent of the approved separation time."
+      ],
+      "notes": "Do not confuse the transfer deadline in HR-001 §4.3 with termination timing."
+    },
+    {
+      "question_id": "EVAL-004",
+      "category": "B",
+      "question": "A developer is transferring to SRE and the receiving manager supports production administrator access. Does the transfer authorize that access, what decisions are needed, and what happens to old access while the new request is pending?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "answer",
+      "expected_answer_summary": "HR-001 v1.0 is Approved (Synthetic): unnecessary previous-role access is removed by the end of the effective business day subject to applicable exceptions, and new access requires the receiving manager's documented systems/business-justification request rather than a job-title grant. Under the proposed IT-001 and SEC-001 v0.1 drafts, SRE membership and business support are not sufficient: record business approval, Security authorization for privileged scope, authorized technical validation/provisioning with IAM coordination, and separate Change Management authorization where applicable. A delayed new request does not itself permit retaining unnecessary old access. Human privileged access has a proposed MFA requirement; actual approved mechanisms are not established here.",
+      "required_evidence": [
+        {
+          "document_id": "HR-001",
+          "section_id": "4.3"
+        },
+        {
+          "document_id": "HR-001",
+          "section_id": "4.4"
+        },
+        {
+          "document_id": "IT-001",
+          "section_id": "6.3"
+        },
+        {
+          "document_id": "SEC-001",
+          "section_id": "5.2"
+        },
+        {
+          "document_id": "SEC-001",
+          "section_id": "4.1"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "HR rules are approved synthetic policy; IT/SEC controls remain Draft — Proposed (Synthetic), v0.1.",
+        "Manager business approval, Security authorization, technical provisioning, and applicable production authorization are distinct.",
+        "Receiving-manager support must become a documented request; SRE membership is not an entitlement.",
+        "Delayed new access does not automatically extend unnecessary old access.",
+        "Human MFA is a proposed control, not evidence of an approved MFA method."
+      ],
+      "forbidden_inferences": [
+        "Joining SRE automatically grants production administration.",
+        "Manager approval alone is enough for privileged access.",
+        "Existing technical permissions authorize a production deployment.",
+        "Old access may stay indefinitely while provisioning is pending.",
+        "Project acceptance made the IT/SEC drafts effective."
+      ],
+      "notes": "Five required evidence units cover both inherited HR authority and draft access controls; a relevant SRE keyword match alone is insufficient."
+    },
+    {
+      "question_id": "EVAL-005",
+      "category": "B",
+      "question": "A production Terraform plan is regenerated after drift is detected. When is renewed Platform review enough without another Change Management approval, when must work stop for amendment or escalation, and what evidence should be retained?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "answer",
+      "expected_answer_summary": "Under PLAT-001 and COMP-001 v0.1, Draft — Proposed (Synthetic), Platform investigates drift, makes technical corrections, and repeats review and recorded technical approval of the replacement plan. No separate Change Management approval is required solely for regeneration when the resulting change stays within the authorized CR scope, assessed risk, window, and other conditions; record that comparison and reassess affected controls. Material scope/risk expansion or a window overrun requires stopping affected execution and obtaining the applicable amendment or escalation decision. Retain replaced/current plan references, investigation, renewed technical approval, the CR comparison or amendment, and execution/verification evidence.",
+      "required_evidence": [
+        {
+          "document_id": "PLAT-001",
+          "section_id": "6.1"
+        },
+        {
+          "document_id": "PLAT-001",
+          "section_id": "4.3"
+        },
+        {
+          "document_id": "COMP-001",
+          "section_id": "8.2"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Both sources are proposed drafts, not effective deployment permission.",
+        "Every newly generated plan needs renewed Platform technical review and recorded approval.",
+        "No extra Change Management decision solely for regeneration is conditional on scope, risk, window, and other CR conditions.",
+        "Material expansion or window overrun stops affected execution pending the authorized decision.",
+        "An escalation request alone is not approval."
+      ],
+      "forbidden_inferences": [
+        "An old plan approval covers a regenerated plan.",
+        "Every regeneration automatically requires new Change Management approval.",
+        "No new Change Management approval means no technical review.",
+        "Change Management technically approves Terraform plans.",
+        "Drift is automatically safe or permission to proceed."
+      ],
+      "notes": "Keep the conditional in-scope branch and the material-change branch together; a retrieved permissive sentence without its limits earns no complete evidence credit."
+    },
+    {
+      "question_id": "EVAL-006",
+      "category": "B",
+      "question": "Who investigates failures in cloud-hosted versus on-premises Jenkins, and how do application teams and SRE participate when a pipeline crosses both environments and production service is affected?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "answer",
+      "expected_answer_summary": "Under SEC-001 and SRE-001 v0.1, Draft — Proposed (Synthetic), Cloud Platform owns cloud-hosted Jenkins infrastructure and its technical identity integrations; Data Center teams own on-premises Jenkins and server integrations. Application teams retain code, build/artifact, and application-release investigation and validation. A pipeline crossing hosting boundaries needs recorded source-integration and target-permission owners, with IAM/Security identity governance. SRE assesses production impact and coordinates restoration priorities; it does not inherit every technical fix.",
+      "required_evidence": [
+        {
+          "document_id": "SEC-001",
+          "section_id": "7.2"
+        },
+        {
+          "document_id": "SRE-001",
+          "section_id": "6.1"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Hosting and affected component determine technical ownership.",
+        "Cross-hosting pipelines require explicit source and target ownership.",
+        "Application work stays with application teams; SRE coordinates impact and priorities.",
+        "Both sources remain proposed v0.1 drafts."
+      ],
+      "forbidden_inferences": [
+        "Platform owns all Jenkins instances.",
+        "Data Center ownership transfers enterprise IAM governance.",
+        "SRE must execute every pipeline repair.",
+        "A Jenkins failure identifies its root cause without investigation."
+      ],
+      "notes": "Use the reconciled hosting qualifiers. Neither a historical review nor a generic technology-name match can replace the required source sections."
+    },
+    {
+      "question_id": "EVAL-007",
+      "category": "B",
+      "question": "An AKS workload uses a managed identity to retrieve a Key Vault secret. Does that identity or the team's vault-administrator access authorize secret retrieval, and what access decisions and integration checks are required?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "answer",
+      "expected_answer_summary": "Under IT-001, SEC-001, and PLAT-001 v0.1, Draft — Proposed (Synthetic), neither managed identity nor vault administration automatically authorizes secret retrieval. Record the workload purpose, owners, scoped permissions and trust design; obtain business approval and the applicable Security decision, with technical validation/provisioning matching recorded approvals. Security reviews workload trust and sensitive/privileged scope; Platform implements cloud integrations within IAM/Security delegation. Distinguish Azure/AKS permissions, Kubernetes RBAC, vault administration, and secret-data access. Review the secret-reference/version strategy, workload identity, scope, and integration dependencies, and verify authorized secret-reference resolution without exposing values.",
+      "required_evidence": [
+        {
+          "document_id": "IT-001",
+          "section_id": "5.2"
+        },
+        {
+          "document_id": "SEC-001",
+          "section_id": "6.1"
+        },
+        {
+          "document_id": "SEC-001",
+          "section_id": "7.1"
+        },
+        {
+          "document_id": "PLAT-001",
+          "section_id": "7.3"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "All cited controls are proposed drafts.",
+        "Business need, security treatment, and technical fulfillment are distinct.",
+        "Managed identity/federation does not approve permissions; cloud implementation remains delegated.",
+        "Vault administration and secret-data access are separate scopes.",
+        "Verify the intended workload's authorized access without exposing secret values."
+      ],
+      "forbidden_inferences": [
+        "Managed identity grants access automatically.",
+        "Vault administration permits unrestricted retrieval of all secrets.",
+        "Azure access implies every Kubernetes action is authorized.",
+        "A specific real role, tenant, vault, command, or credential is established by the corpus."
+      ],
+      "notes": "Tests layered authorization and verified integration; it does not request provider commands or actual secrets."
+    },
+    {
+      "question_id": "EVAL-008",
+      "category": "B",
+      "question": "A production deployment fails and users are still affected. Who assesses and declares a reliability incident, and can it be closed once a later Jenkins job turns green?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "answer",
+      "expected_answer_summary": "Under PLAT-001 and SRE-001 v0.1, Draft — Proposed (Synthetic), production impact or a credible threat to continuity/integrity warrants SRE assessment. The responding SRE representative assesses with service and technical owners, declares an applicable incident, and records rationale, provisional severity, and a named coordinator. A green Jenkins job alone does not prove restoration. Responsible technical/application owners verify agreed service-specific criteria and actual production state; SRE records partial versus full restoration, residual-risk ownership, outstanding actions, and a review plan before documented closure. Root-cause investigation can continue as tracked work.",
+      "required_evidence": [
+        {
+          "document_id": "SRE-001",
+          "section_id": "1.1"
+        },
+        {
+          "document_id": "SRE-001",
+          "section_id": "3.2"
+        },
+        {
+          "document_id": "PLAT-001",
+          "section_id": "9.2"
+        },
+        {
+          "document_id": "SRE-001",
+          "section_id": "9.2"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Requirements are proposed drafts.",
+        "Production impact or credible production threat matters; every failed nonproduction build is not automatically an incident.",
+        "Incident declaration records ownership and evidence; it is not change authorization.",
+        "Successful tooling alone cannot prove application/service health.",
+        "Partial restoration is identified as partial; closure does not require pretending root cause is already known."
+      ],
+      "forbidden_inferences": [
+        "Every deployment failure is automatically SEV-1.",
+        "Jenkins success proves service restoration.",
+        "SRE performs every technical fix.",
+        "Incident closure proves all corrective work is complete.",
+        "There is a universal restoration observation duration."
+      ],
+      "notes": "Separates detection/declaration, technical verification, service restoration, and closure. No real incident action is performed."
+    },
+    {
+      "question_id": "EVAL-009",
+      "category": "B",
+      "question": "A Venafi certificate renewal failure disrupts a cloud-hosted production service. What belongs to Platform, Security, and SRE, and does the corpus identify the certificate-service operator?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "answer",
+      "expected_answer_summary": "Under SEC-001 and SRE-001 v0.1, Draft — Proposed (Synthetic), Security owns PKI/certificate standards, trust and private-key protection requirements, and security-sensitive decisions. Cloud Platform implements cloud certificate integrations and investigates infrastructure integration with the designated certificate-service owner; application teams validate connectivity and service effects. The actual certificate-service administrator/Venafi operator must still be designated and cannot be inferred from a team title. Engage SRE for service impact and reliability restoration coordination, while Security retains security controls if compromise or exposure overlaps. Renewal automation is not authorization, and trust validation must not be disabled to hide failure.",
+      "required_evidence": [
+        {
+          "document_id": "SEC-001",
+          "section_id": "12.1"
+        },
+        {
+          "document_id": "SEC-001",
+          "section_id": "12.2"
+        },
+        {
+          "document_id": "SRE-001",
+          "section_id": "6.1"
+        },
+        {
+          "document_id": "SRE-001",
+          "section_id": "5.2"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Sources remain proposed drafts.",
+        "Cloud integration ownership differs from PKI standards ownership and actual certificate-service operation.",
+        "The actual certificate-service administrator/Venafi operator is unresolved.",
+        "SRE coordinates restoration; Security controls remain separate during overlap.",
+        "The scenario supplies cloud hosting; do not silently extend Platform ownership to all on-premises integrations."
+      ],
+      "forbidden_inferences": [
+        "Security must execute every certificate repair.",
+        "Platform is already designated as the Venafi operator.",
+        "A named operator, issuer, validity period, or renewal command is available.",
+        "Incident urgency permits disabling certificate validation."
+      ],
+      "notes": "An answer can explain supported boundaries and explicitly identify the unresolved operator without abstaining from the whole scenario."
+    },
+    {
+      "question_id": "EVAL-010",
+      "category": "C",
+      "question": "The Jenkins job is failing. Which team should fix it?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "clarify",
+      "expected_answer_summary": "The proposed SEC-001 and SRE-001 v0.1 drafts support conditional routing, but the query is underspecified. Ask where Jenkins is hosted, which component or failure stage is involved, whether the pipeline crosses hosting boundaries, and whether production impact or a credible production threat exists. Cloud-hosted infrastructure goes to Platform; on-premises infrastructure goes to Data Center; application build/code/artifact failures involve application owners. SRE coordinates applicable production incidents rather than every failed build. Do not pick one owner or declare an incident without the missing context.",
+      "required_evidence": [
+        {
+          "document_id": "SEC-001",
+          "section_id": "7.2"
+        },
+        {
+          "document_id": "SRE-001",
+          "section_id": "6.1"
+        },
+        {
+          "document_id": "SRE-001",
+          "section_id": "1.1"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Explicitly request hosting environment and affected component/failure-stage context.",
+        "Ask about production impact or credible threat before assuming incident coordination.",
+        "Give conditional cloud/on-premises/application ownership without guessing the actual cause.",
+        "All operating-model statements are proposed drafts."
+      ],
+      "forbidden_inferences": [
+        "Jenkins always belongs to Platform.",
+        "Every failed job is a production incident.",
+        "The failure must be caused by application code or infrastructure without evidence."
+      ],
+      "notes": "Clarify rather than blanket-abstain: useful conditional facts are present even though one definitive owner cannot be selected."
+    },
+    {
+      "question_id": "EVAL-011",
+      "category": "C",
+      "question": "My manager approved 'production access'. Is that enough to provision it?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "clarify",
+      "expected_answer_summary": "Under IT-001 and SEC-001 v0.1, Draft — Proposed (Synthetic), a business approval alone does not establish the required classification, security conditions, or executable permission scope. Ask for the subject/workload, target service and environment, requested actions/permissions, purpose, intended start, and temporary end time or continuing need. Assess actual effective permissions, inheritance, and exposure with Security and the technical owner. A reviewed standard profile may support routine access; sensitive/privileged scope needs recorded Security authorization. Unclear classification or missing approvals/controls blocks provisioning; the owning technical team implements only approved scope.",
+      "required_evidence": [
+        {
+          "document_id": "IT-001",
+          "section_id": "5.1"
+        },
+        {
+          "document_id": "IT-001",
+          "section_id": "5.2"
+        },
+        {
+          "document_id": "SEC-001",
+          "section_id": "3.1"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Request permission scope and target context, not just a team or role label.",
+        "Manager approval establishes business need, not complete authorization.",
+        "Standard, sensitive, privileged, and unclear classifications depend on effective capabilities.",
+        "Production labeling alone does not prove every requested permission is administrative.",
+        "All access-control statements are proposed drafts; no grant is authorized by this answer."
+      ],
+      "forbidden_inferences": [
+        "All production access is automatically administrator access.",
+        "Manager approval alone authorizes every requested grant.",
+        "The system can select a broad production role without clarification.",
+        "Security controls can be omitted because the request is urgent."
+      ],
+      "notes": "Evaluate clarification plus the known approval boundary. Do not request credentials or real confidential infrastructure identifiers."
+    },
+    {
+      "question_id": "EVAL-012",
+      "category": "C",
+      "question": "Rapid Response says we need more time. Can we keep deploying?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "clarify",
+      "expected_answer_summary": "Under PLAT-001 and SRE-001 v0.1, Draft — Proposed (Synthetic), Rapid Response coordinates a window-extension request but does not automatically approve it. Ask for the current authorized window, remaining work and scope/risk, and whether an explicitly authorized decision-maker has recorded an extension with conditions and authority. Within the current window all existing CR conditions still apply. Without an authorized extension, do not assume work may continue beyond it; follow recorded safe-stop or authorized recovery conditions. The corpus does not identify the actual window approver or confer that authority on Rapid Response.",
+      "required_evidence": [
+        {
+          "document_id": "PLAT-001",
+          "section_id": "11.3"
+        },
+        {
+          "document_id": "PLAT-001",
+          "section_id": "4.3"
+        },
+        {
+          "document_id": "SRE-001",
+          "section_id": "7.2"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Clarify whether this is a request or a recorded authorized decision.",
+        "Clarify current/revised window and the applicable CR scope, risk, and conditions.",
+        "No automatic extension follows from Rapid Response participation.",
+        "Actual window-approval delegations remain unresolved in the proposed drafts."
+      ],
+      "forbidden_inferences": [
+        "Rapid Response automatically approves deployment-window extensions.",
+        "An open request or escalation is approval.",
+        "Urgency permits execution beyond the approved window.",
+        "A particular manager or committee is the window approver without evidence."
+      ],
+      "notes": "Decision authority and authorization state are missing; give conditional limits rather than an unconditional yes or no to all ongoing work."
+    },
+    {
+      "question_id": "EVAL-013",
+      "category": "D",
+      "question": "Exactly how many years is the approved retention period for production change and access-review evidence?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "abstain",
+      "expected_answer_summary": "The corpus does not establish an exact approved retention duration. COMP-001 v0.1, Draft — Proposed (Synthetic), §11.1 proposes category-specific schedules with purpose, owner, start event, period, rationale, and approving authority, but sets no numeric period and leaves actual adoption/authority unresolved. Annual policy review is not evidence retention or access-review cadence. State the gap and refer the decision to the proposed Compliance-led schedule process; do not invent a legal period, automatic disposal date, or indefinite-retention mandate.",
+      "required_evidence": [
+        {
+          "document_id": "COMP-001",
+          "section_id": "11.1"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Abstain from supplying an exact approved number while explaining supported governance.",
+        "COMP-001 is a proposed draft and defines no numeric retention period.",
+        "Schedule fields and annual policy review are not adopted retention values.",
+        "Legal or contractual obligations require separately verified sources."
+      ],
+      "forbidden_inferences": [
+        "A specific number of years is approved or required by law.",
+        "Annual policy review means one-year evidence retention.",
+        "All records must be kept forever when a schedule is missing.",
+        "Missing schedules automatically authorize deletion."
+      ],
+      "notes": "Evidence establishes the explicit limitation, not the absent retention rule. Asking the user for a guessed number would not resolve the corpus gap."
+    },
+    {
+      "question_id": "EVAL-014",
+      "category": "D",
+      "question": "Which exact MFA method is approved for administrators, and what fixed credential-rotation interval must our workloads use?",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "abstain",
+      "expected_answer_summary": "No exact approved MFA method or fixed workload credential-rotation interval is established. SEC-001 v0.1, Draft — Proposed (Synthetic), proposes MFA for human privileged access, prefers phishing-resistant methods where supported, and requires reviewed adoption of methods and enrollment/recovery designs. Credential owners, Security, and technical owners must agree risk-based lifecycle schedules and triggers; the draft sets no arbitrary universal rotation period. Explain those supported proposals and abstain from naming a product/method or numerical interval as already approved.",
+      "required_evidence": [
+        {
+          "document_id": "SEC-001",
+          "section_id": "4.1"
+        },
+        {
+          "document_id": "SEC-001",
+          "section_id": "8.2"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Distinguish proposed human MFA requirements from an actually approved method.",
+        "A preference for phishing-resistant methods is not approval of a specific implementation.",
+        "Credential schedules and triggers depend on a reviewed design; no universal period is specified.",
+        "The source remains Draft — Proposed (Synthetic), v0.1."
+      ],
+      "forbidden_inferences": [
+        "A particular MFA app, factor, or product is approved.",
+        "A fixed rotation interval such as a conventional industry number is policy.",
+        "A draft requirement proves a deployed authentication configuration.",
+        "Human MFA requirements automatically define noninteractive workload authentication."
+      ],
+      "notes": "Two related explicit gaps share the same unsupported-case behavior; both must be acknowledged for full answer credit."
+    },
+    {
+      "question_id": "EVAL-015",
+      "category": "D",
+      "question": "Give me the detailed approved GCP production deployment procedure, including the exact execution steps and approvals.",
+      "retrieval_mode": "draft_review",
+      "expected_behavior": "abstain",
+      "expected_answer_summary": "The manifest-listed corpus does not establish a detailed approved GCP production deployment procedure. PLAT-001 v0.1, Draft — Proposed (Synthetic), describes Azure-focused change governance and explicitly does not expand its scope into a complete GCP/Data Center procedure. SEC-001 v0.1 proposes Cloud Platform responsibility for GCP authorization mappings and scoped implementation within delegation, but those ownership principles are not a deployment runbook or an approved release process. State that approved GCP-specific coverage, procedures, and delegations need separate review; do not translate Azure examples into invented GCP commands or claim current operational approval.",
+      "required_evidence": [
+        {
+          "document_id": "PLAT-001",
+          "section_id": "1.1"
+        },
+        {
+          "document_id": "PLAT-001",
+          "section_id": "2"
+        },
+        {
+          "document_id": "SEC-001",
+          "section_id": "6.1"
+        }
+      ],
+      "acceptable_alternative_evidence": [],
+      "required_qualifiers": [
+        "Abstain from detailed approved steps while identifying the available proposed scope and ownership principles.",
+        "A GCP mention in a Security policy does not establish a GCP deployment procedure.",
+        "PLAT-001 and SEC-001 remain v0.1 proposed drafts.",
+        "Do not infer that GCP is forbidden merely because the requested procedure is unavailable."
+      ],
+      "forbidden_inferences": [
+        "Azure/Terraform examples constitute an approved GCP runbook.",
+        "Specific GCP commands, role names, projects, approvers, or deployment gates are established by the corpus.",
+        "Cloud technical ownership grants unrestricted production approval.",
+        "An absent GCP procedure proves GCP use is prohibited."
+      ],
+      "notes": "The manifest is the experiment's source boundary; do not use vendor documentation or engineering review reports to manufacture the missing policy."
+    }
+  ]
+}

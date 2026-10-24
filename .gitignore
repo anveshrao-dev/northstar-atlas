@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Local generated data
+.local/
+chroma_db/
+*.sqlite3
+
+# Local operational histories; public summaries and measurements are in docs/README.md.
+# Keep these files locally. Exclusion is not permission to delete historical records.
+/docs/decisions/M3.3-Pinecone-Cloud-Integration.md
+/docs/decisions/M4.3-Grounded-Generation.md
+/docs/decisions/M4.4-QA-Integration.md
+/docs/decisions/M8.1-Streamlit-MVP-Design.md
+/docs/decisions/M8.2-Streamlit-Implementation.md
+/docs/decisions/M8-GitHub-Readiness-Audit.md
+
+# macOS
+.DS_Store
+
+# Local editor configuration
+.vscode/
+.idea/
