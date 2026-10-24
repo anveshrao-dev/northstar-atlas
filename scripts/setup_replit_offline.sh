@@ -41,7 +41,15 @@ export UV_PROJECT_ENVIRONMENT="$root/.venv"
 export UV_PYTHON_DOWNLOADS=never
 export TMPDIR="$root/.local/tmp"
 export PYTHONPYCACHEPREFIX="$root/.local/pycache"
-if [ "$(uv --version)" != 'uv 0.12.23' ]; then
+# Match the whole output: exact pin, optional platform target, one line only.
+# pipefail also rejects a failed uv command even if it prints a valid version.
+if ! uv --version | python3.12 -B -c '
+import re
+import sys
+target = r"[a-z][a-z0-9_]*(?:-[a-z][a-z0-9_]*){2,3}"
+pattern = rf"uv 0\.12\.23(?: \({target}\))?(?:\r?\n)?"
+sys.exit(0 if re.fullmatch(pattern, sys.stdin.read()) else 1)
+'; then
   echo "Preview setup requires reviewed uv 0.12.23; no installation attempted" >&2
   exit 1
 fi

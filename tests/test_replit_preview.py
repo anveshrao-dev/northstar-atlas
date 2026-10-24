@@ -34,6 +34,7 @@ with Path('.local/uv-calls.jsonl').open('a') as f:
     f.write(json.dumps(args) + '\\n')
 if args == ['--version']:
     print(os.environ.get('FAKE_UV_VERSION', 'uv 0.12.23'))
+    raise SystemExit(int(os.environ.get('FAKE_UV_VERSION_EXIT', '0')))
 elif args[0] == 'export':
     target = Path(args[args.index('--output-file') + 1])
     # Export fixture is created from the actual reviewed lock offline by tests.
@@ -176,6 +177,58 @@ class ReplitPreviewTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / '.venv').exists())
         self.assertEqual(self.uv_calls(), [['--version']])
+
+    def test_setup_accepts_exact_uv_version_with_platform_target_suffix(self):
+        fixture = self.root / '.local/requirements.txt'
+        fixture.write_text('intentionally unapproved export\n')
+        expected_calls = []
+        for version in (
+            'uv 0.12.23',
+            'uv 0.12.23 (x86_64-unknown-linux-gnu)',
+            'uv 0.12.23 (aarch64-unknown-linux-musl)',
+            'uv 0.12.23 (aarch64-apple-darwin)',
+            'uv 0.12.23 (x86_64-pc-windows-msvc)',
+        ):
+            with self.subTest(version=version):
+                result = self.run_script('setup_replit_offline.sh', FAKE_UV_VERSION=version,
+                                         REQUIREMENTS_FIXTURE=str(fixture))
+                # Reaching the unchanged export guard proves the version passed;
+                # the deliberately invalid fixture prevents any installation.
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('reviewed UI subset', result.stderr)
+                calls = self.uv_calls()
+                self.assertEqual([call[0] for call in calls[len(expected_calls):]], ['--version', 'export'])
+                expected_calls = calls
+                self.assertFalse((self.root / '.venv').exists())
+
+    def test_setup_rejects_different_malformed_or_ambiguous_uv_output(self):
+        expected_calls = []
+        for version in (
+            '', 'uv 0.12.22', 'uv 0.12.24 (x86_64-unknown-linux-gnu)',
+            'uv 0.12.230', 'uv 0.12.23rc1', 'uv 0.12.23+local',
+            'other 0.12.23', ' uv 0.12.23', 'uv  0.12.23', 'uv 0.12.23 ',
+            'uv 0.12.23 ()', 'uv 0.12.23 (linux)',
+            'uv 0.12.23 (x86_64--linux-gnu)', 'uv 0.12.23 (x86_64-unknown-linux-gnu',
+            'uv 0.12.23 (x86_64-unknown-linux-gnu) extra',
+            'uv 0.12.23 (aarch64-apple-darwin) (x86_64-apple-darwin)',
+            'uv 0.12.23 (aarch64-apple-darwin extra)',
+            'uv 0.12.23\nuv 0.12.24', 'uv 0.12.23\n',
+        ):
+            with self.subTest(version=version):
+                result = self.run_script('setup_replit_offline.sh', FAKE_UV_VERSION=version)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('requires reviewed uv 0.12.23', result.stderr)
+                expected_calls.append(['--version'])
+                self.assertEqual(self.uv_calls(), expected_calls)
+                self.assertFalse((self.root / '.venv').exists())
+
+    def test_failed_uv_version_command_is_rejected_even_with_valid_output(self):
+        result = self.run_script('setup_replit_offline.sh', FAKE_UV_VERSION='uv 0.12.23',
+                                FAKE_UV_VERSION_EXIT='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('requires reviewed uv 0.12.23', result.stderr)
+        self.assertEqual(self.uv_calls(), [['--version']])
+        self.assertFalse((self.root / '.venv').exists())
 
     def uv_calls(self):
         return [json.loads(line) for line in (self.root / '.local/uv-calls.jsonl').read_text().splitlines()]
