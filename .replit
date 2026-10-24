@@ -1,0 +1,15 @@
+# Editor preview only. Provision the UI subset explicitly before pressing Run.
+entrypoint = "src/northstar_atlas/ui/app.py"
+modules = ["python-3.12"]
+
+[run]
+args = ["bash", "scripts/run_replit_offline.sh"]
+
+[packager.features]
+guessImports = false
+packageSearch = false
+enabledForHosting = false
+
+[[ports]]
+localPort = 8501
+externalPort = 80
