@@ -10,7 +10,7 @@ from typing import Iterator, Literal
 from northstar_atlas.embeddings import EmbeddingProvider
 from northstar_atlas.evidence import CitationReference
 from northstar_atlas.generation import (
-    GenerationError, GroundedAnswer, PROMPT_VERSION, SCHEMA_VERSION, VALIDATION_VERSION,
+    GenerationError, GroundedAnswer, PreparedAnswer, PROMPT_VERSION, SCHEMA_VERSION, VALIDATION_VERSION,
     generate_answer, prepare_answer, render_answer,
 )
 from northstar_atlas.grounding import (AbstentionRequirements, ConditionCoverage, EvidenceObligation,
@@ -132,6 +132,7 @@ class QADiagnostics:
     quotation_matches: tuple[str, ...] = ()
     elapsed_seconds: float = 0.0
     application_owned_ids: tuple[str, ...] = ()
+    retrieval_strategy: str = "dense"
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,36 @@ class QAFailure:
     accepted: Literal[False] = field(default=False, init=False)
 
 
+def _public_answer(answer: GroundedAnswer) -> PublicAnswer:
+    """Shared publication projection, called only after existing validation."""
+    rendered = render_answer(answer)
+    supports = tuple(s for claim in answer.claims for s in claim.support) + tuple(
+        s for entry in answer.obligation_answers for s in entry.support)
+    return PublicAnswer(answer.kind, rendered, tuple(dict.fromkeys(s.citation for s in supports)),
+                        answer.coverage, _accepted_presentation(answer))
+
+
+def _prepared_diagnostics(diagnostics: QADiagnostics, prepared: PreparedAnswer) -> QADiagnostics:
+    traces = tuple(EvidenceTrace(group.citation, source.chunk.chunk_id, str(source.chunk.source_path),
+                                 tuple((s.source_start, s.source_end, s.role) for s in source.segments),
+                                 source.required_context_ids)
+                   for group in prepared.context.groups for source in group.sources)
+    return replace(diagnostics, evidence=traces, prompt_version=prepared.prompt_version,
+                   schema_version=prepared.schema_version, validation_version=prepared.validation_version,
+                   warning_codes=tuple(w.code for w in prepared.context.warnings),
+                   input_token_bound=prepared.request.input_token_bound,
+                   output_token_limit=prepared.request.output_tokens,
+                   context_token_limit=prepared.request.context_tokens)
+
+
+def _accepted_diagnostics(diagnostics: QADiagnostics, answer: GroundedAnswer) -> QADiagnostics:
+    supports = tuple(s for claim in answer.claims for s in claim.support) + tuple(
+        s for entry in answer.obligation_answers for s in entry.support)
+    return replace(diagnostics, stage="complete", quotation_matches=tuple(s.match.kind for s in supports),
+                   application_owned_ids=tuple(a.obligation_id for a in answer.obligation_answers
+                                               if a.statement_origin == "application_reviewed_source"))
+
+
 class QAConfigurationError(ValueError):
     """Safe setup failure, distinct from a per-question policy abstention."""
     def __init__(self):
@@ -161,12 +192,15 @@ class _ProviderFailure(Exception):
 
 class _ObservedProvider:
     """Attribute transport failures without interpreting provider exception strings."""
-    def __init__(self, provider: LLMProvider):
+    def __init__(self, provider: LLMProvider, *, max_calls: int | None = None):
         self.provider = provider
+        self.max_calls = max_calls
         self.calls = 0
         self.usage: TokenUsage | None = None
 
     def generate(self, request: GenerationRequest) -> GenerationResponse:
+        if self.max_calls is not None and self.calls >= self.max_calls:
+            raise GenerationError("inference allowance exhausted")
         self.calls += 1
         try:
             response = self.provider.generate(request)
@@ -174,6 +208,8 @@ class _ObservedProvider:
             raise _ProviderFailure() from None
         if not isinstance(response, GenerationResponse):
             raise GenerationError("invalid provider response type")
+        if self.max_calls is not None and (type(response.attempts) is not int or response.attempts != 1):
+            raise GenerationError("provider did not use the required single attempt")
         usage = response.usage
         if isinstance(usage, TokenUsage) and all(type(n) is int and n >= 0 for n in
                                                (usage.prompt_tokens, usage.completion_tokens, usage.total_tokens)):
@@ -188,11 +224,12 @@ class QAService:
     requirements to the evidence actually returned for each question. The service
     never derives requirements from question wording or evaluation answer keys.
     """
-    def __init__(self, store: RetrievalStore, embedder: EmbeddingProvider, provider: LLMProvider, *,
-                 corpus_fingerprint: str, backend: str = "custom", model: str = MODEL_ID):
+    def __init__(self, store: RetrievalStore, embedder: EmbeddingProvider | None, provider: LLMProvider, *,
+                 corpus_fingerprint: str, backend: str = "custom", model: str = MODEL_ID,
+                 strategy: str = "dense"):
         try:
             QwenTokenBound(model)
-            if (backend not in ("chroma", "pinecone", "custom") or
+            if (backend not in ("chroma", "pinecone", "custom") or strategy not in ("dense", "bm25", "hybrid") or
                     not isinstance(corpus_fingerprint, str) or not corpus_fingerprint.strip() or
                     not callable(getattr(store, "search", None)) or
                     not callable(getattr(provider, "generate", None))):
@@ -201,6 +238,7 @@ class QAService:
             raise QAConfigurationError() from None
         self._store, self._embedder, self._provider = store, embedder, provider
         self._fingerprint, self._backend, self._model = corpus_fingerprint, backend, model
+        self._strategy = strategy
 
     def ask(self, question: str, *, mode: RetrievalMode = "approved_only", top_k: int = 5,
             reference_date: date | None = None, limits: GenerationLimits = GenerationLimits(),
@@ -209,7 +247,8 @@ class QAService:
             extractive_scope: ReviewedExtractiveScope | None = None) -> QASuccess | QAFailure:
         started = perf_counter()
         observed = _ObservedProvider(self._provider)
-        diagnostics = QADiagnostics("input", self._backend, None, None, self._fingerprint, self._model)
+        diagnostics = QADiagnostics("input", self._backend, None, None, self._fingerprint, self._model,
+                                    retrieval_strategy=self._strategy)
 
         def failure(code: ErrorCode, stage: Stage) -> QAFailure:
             return QAFailure(PublicError(code, _MESSAGES[code]), replace(
@@ -233,34 +272,16 @@ class QAService:
                                       model=self._model, corpus_fingerprint=self._fingerprint,
                                       obligations=obligations, abstention=abstention,
                                       extractive_scope=extractive_scope)
-            traces = tuple(EvidenceTrace(group.citation, source.chunk.chunk_id, str(source.chunk.source_path),
-                                         tuple((s.source_start, s.source_end, s.role) for s in source.segments),
-                                         source.required_context_ids)
-                           for group in prepared.context.groups for source in group.sources)
-            diagnostics = replace(diagnostics, evidence=traces,
-                                  prompt_version=prepared.prompt_version,
-                                  schema_version=prepared.schema_version,
-                                  validation_version=prepared.validation_version,
-                                  warning_codes=tuple(w.code for w in prepared.context.warnings),
-                                  input_token_bound=prepared.request.input_token_bound,
-                                  output_token_limit=prepared.request.output_tokens,
-                                  context_token_limit=prepared.request.context_tokens)
+            diagnostics = _prepared_diagnostics(diagnostics, prepared)
         except GenerationError:
             return failure("context_failed", "context")
         except Exception:
             return failure("internal_error", "context")
         try:
             result = generate_answer(prepared, observed)
-            rendered = render_answer(result.answer)
-            supports = tuple(s for claim in result.answer.claims for s in claim.support) + tuple(
-                s for entry in result.answer.obligation_answers for s in entry.support)
-            citations = tuple(dict.fromkeys(s.citation for s in supports))
-            public = PublicAnswer(result.answer.kind, rendered, citations, result.answer.coverage,
-                                  _accepted_presentation(result.answer))
-            return QASuccess(public, replace(diagnostics, stage="complete", provider_calls=observed.calls,
-                                            usage=observed.usage, quotation_matches=tuple(s.match.kind for s in supports),
-                                            application_owned_ids=tuple(a.obligation_id for a in result.answer.obligation_answers
-                                                if a.statement_origin == "application_reviewed_source"),
+            public = _public_answer(result.answer)
+            return QASuccess(public, replace(_accepted_diagnostics(diagnostics, result.answer),
+                                            provider_calls=observed.calls, usage=observed.usage,
                                             elapsed_seconds=perf_counter() - started))
         except _ProviderFailure:
             return failure("provider_failed", "provider")
@@ -271,9 +292,25 @@ class QAService:
 
 
 @contextmanager
-def open_retriever(root: Path, backend: str):
+def open_retriever(root: Path, backend: str, *, strategy: str = "dense", snapshot_id: str | None = None):
     """Normal verified retrieval, never index/provision or regenerate document vectors."""
     root = validate_project_root(root)
+    if strategy not in ("dense", "bm25", "hybrid") or backend not in ("chroma", "pinecone"):
+        raise GenerationError("unsupported retrieval backend or strategy")
+    if strategy != "dense":
+        from northstar_atlas.vector_store.catalog import load_catalog
+        from northstar_atlas.vector_store.bm25 import BM25Store
+        catalog = load_catalog(root, snapshot_id)
+        lexical = BM25Store(catalog)
+        if strategy == "bm25":
+            yield lexical, None, catalog.fingerprint
+        else:
+            from northstar_atlas.vector_store.hybrid import HybridStore
+            with open_retriever(root, backend) as (dense, embedder, fingerprint):
+                if fingerprint != catalog.fingerprint or embedder.model != catalog.config.model:
+                    raise GenerationError("hybrid corpus/model configuration differs")
+                yield HybridStore(dense, lexical), embedder, fingerprint
+        return
     from northstar_atlas.local_embeddings import MiniLMProvider
     from northstar_atlas.vector_store import ChromaStore, IndexConfig, corpus_snapshot
     _, fingerprint = corpus_snapshot(root)
@@ -300,7 +337,8 @@ def open_retriever(root: Path, backend: str):
 
 @contextmanager
 def open_qa_service(root: Path, *, backend: str | None = None, provider: LLMProvider | None = None,
-                    allow_paid: bool = False, model: str = MODEL_ID) -> Iterator[QAService]:
+                    allow_paid: bool = False, model: str = MODEL_ID, strategy: str = "dense",
+                    snapshot_id: str | None = None) -> Iterator[QAService]:
     """Open reusable configured adapters; injected providers remain caller-owned.
 
     No inference occurs during setup. Configured Nebius requires explicit paid
@@ -312,7 +350,7 @@ def open_qa_service(root: Path, *, backend: str | None = None, provider: LLMProv
     try:
         root = validate_project_root(root)
         selected = os.environ.get("VECTOR_STORE", "chroma") if backend is None else backend
-        if selected not in ("chroma", "pinecone"):
+        if selected not in ("chroma", "pinecone") or strategy not in ("dense", "bm25", "hybrid"):
             raise QAConfigurationError()
         QwenTokenBound(model)
         if provider is not None and not callable(getattr(provider, "generate", None)):
@@ -325,8 +363,10 @@ def open_qa_service(root: Path, *, backend: str | None = None, provider: LLMProv
             if settings.model != model:
                 raise QAConfigurationError()
             provider = resources.enter_context(NebiusProvider(settings, allow_paid=True, max_attempts=1))
-        store, embedder, fingerprint = resources.enter_context(open_retriever(root, selected))
-        service = QAService(store, embedder, provider, corpus_fingerprint=fingerprint, backend=selected, model=model)
+        options = {} if strategy == "dense" else {"strategy": strategy, "snapshot_id": snapshot_id}
+        store, embedder, fingerprint = resources.enter_context(open_retriever(root, selected, **options))
+        service = QAService(store, embedder, provider, corpus_fingerprint=fingerprint, backend=selected,
+                            model=model, strategy=strategy)
     except Exception:
         try:
             resources.close()

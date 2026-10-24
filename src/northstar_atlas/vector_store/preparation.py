@@ -4,19 +4,44 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from functools import cached_property
 import hashlib
+import json
 import math
 from pathlib import Path
+import re
 import struct
 from time import perf_counter
 from typing import Protocol
 
-from northstar_atlas.embeddings import EmbeddedChunk, EmbeddingProvider, embed_chunks, validate_vector
+from northstar_atlas.embeddings import EmbeddedChunk, EmbeddingModel, EmbeddingProvider, embed_chunks, validate_vector
 from northstar_atlas.ingestion.chunker import chunk_document
 from northstar_atlas.ingestion.document_loader import MANIFEST_PATH, PolicyDocument, load_documents
 from northstar_atlas.ingestion.refiner import TokenCounter, reconstruct, refine_chunks
-from .records import IndexConfig, VectorStoreError, digest, metadata_for, original_id, validate_context
+from .records import IndexConfig, VectorStoreError, decode_chunk, digest, metadata_for, original_id, validate_context
 
 STORAGE_SCHEMA_VERSION = 1
+
+
+def load_frozen_snapshot(root: Path, namespace: str) -> "FrozenSnapshot":
+    """Read an existing immutable local snapshot; no SDK, model, credentials or writes."""
+    try:
+        root = Path(root).resolve(strict=True)
+        if not isinstance(namespace, str) or not re.fullmatch(r"dev-[0-9a-f]{64}", namespace):
+            raise ValueError
+        path = root / ".local/pinecone/snapshots" / f"{namespace[4:]}.json"
+        if not path.resolve(strict=True).is_relative_to(root):
+            raise ValueError
+        data = json.loads(path.read_text(encoding="utf-8"))
+        config_data = dict(data["config"])
+        model = EmbeddingModel(**config_data.pop("model"))
+        config = IndexConfig(model, **config_data)
+        records = [EmbeddedChunk(decode_chunk(r["id"], r["text"], r["metadata"], model),
+                                 tuple(r["vector"]), model) for r in data["records"]]
+        snapshot = freeze_snapshot(records, config, data["corpus_fingerprint"])
+        if snapshot.snapshot_id != data["snapshot_id"] or snapshot.namespace != namespace:
+            raise ValueError
+        return snapshot
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise VectorStoreError("frozen snapshot missing or invalid; no automatic regeneration") from None
 
 
 class RefiningProvider(EmbeddingProvider, TokenCounter, Protocol):

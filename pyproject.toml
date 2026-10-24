@@ -13,6 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+orchestration = [
+    "langgraph==1.2.16",
+]
 pinecone = [
     "pinecone==10.0.0",
 ]

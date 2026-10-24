@@ -28,7 +28,7 @@ Six policy Markdown files + SHA-256 corpus manifest
   → Chroma persistence / optional immutable Pinecone namespace
 
 Question + approved_only or draft_review
-  → query embedding and top-5 dense retrieval
+  → top-5 dense retrieval by default; optional BM25 or dense+BM25 RRF
   → required sibling context and source-identity checks
   → deduplicated, token-budgeted evidence package
   → Nebius Qwen structured response
@@ -51,11 +51,17 @@ being presented as policy abstentions.
 | Managed alternative | Pinecone SDK 10.0.0; Azure/cosine/384 dimensions; explicit publication and integrity checks |
 | Generation | Nebius Token Factory, `Qwen/Qwen3-30B-A3B-Instruct-2507`, HTTPX adapter |
 | Answer contract | `grounded-answer-v2`, including caller-reviewed obligations and evidence-backed abstention |
+| Retrieval strategies | Dense default; standard-library BM25; optional dense20 + BM2520 RRF60, final top 5 |
+| Optional orchestration | LangGraph 1.2.16; five nodes, at most two retrieval attempts and one inference request |
 | Browser interface | Streamlit 1.66.1; separate answer, Sources, Evidence details and Validation details |
 | Testing | Standard-library unittest; deterministic providers and optional cached-model checks |
 
-LangChain, BM25, hybrid retrieval, reranking and LangGraph are not part of the
-current runtime. See the [architecture and experiment guide](docs/README.md).
+BM25, hybrid retrieval and `GraphQAService` are implemented opt-in library paths.
+The existing QAService, CLI and Streamlit retain dense retrieval and linear
+orchestration by default. Graph execution requires the optional `orchestration`
+extra; its transitive langchain-core package is execution plumbing, not a new
+model adapter. Reranking, query rewriting and autonomous actions are deferred.
+See the [architecture and experiment guide](docs/README.md).
 
 ## Corpus and policy authority
 
@@ -155,7 +161,7 @@ uv sync --locked --no-python-downloads --extra ui --extra llm
 ```
 
 The base install alone does not include the UI or LLM extras. Full development
-tests also use the optional Pinecone package; install all extras only when needed:
+tests also use the optional Pinecone and orchestration packages; install all extras only when needed:
 `uv sync --locked --no-python-downloads --all-extras`. Never copy a Mac `.venv`
 to Linux. Review the Linux footprint before synchronization on a new platform.
 
@@ -313,6 +319,31 @@ Fifteen synthetic development questions and selected live smoke tests cannot
 establish general answer quality. Failures and corrective experiments are summarized
 in the [engineering guide](docs/README.md#experiments-and-observed-limitations).
 
+### Retrieval and graph evaluation
+
+The [final local evaluation](docs/decisions/M7.1-Final-Evaluation.md) uses the
+same frozen questions, source snapshot and complete-section scoring:
+
+| Strategy | Direct Recall@5 | Expanded Recall@5 | Full expanded coverage |
+| --- | ---: | ---: | ---: |
+| Dense | 55.22% | 64.67% | 6/15 |
+| BM25 | 51.56% | 66.78% | 6/15 |
+| Hybrid | 57.44% | 70.44% | 6/15 |
+
+Hybrid improves partial coverage but adds latency, retains AKS provisioning
+gaps and has more full-prompt budget failures. Keep the dense default.
+Offline graph checks exercise real local retrieval with deterministic fake
+generation; they do not measure LLM answer quality. An adversarial ordinary
+claim with a genuine quotation passed structural checks despite contradicting
+the source. Coverage remained `not_assessed`: citation and quotation validity
+do not enforce semantic entailment or complete policy conditions.
+
+Experimental retrieval requires an existing verified local chunk snapshot;
+missing snapshots stop rather than trigger downloads or reindexing. See
+[retrieval interfaces and reproduction](docs/decisions/M5.2-Hybrid-Retrieval-Results.md)
+and [graph setup and limits](docs/decisions/M6.2-LangGraph-Implementation.md).
+The full existing suite passed 527 tests with cached-model checks enabled.
+
 ## Repository map
 
 - `src/northstar_atlas/`: ingestion, embeddings, vector stores, evaluation,
@@ -331,16 +362,20 @@ that list remain in the local development checkout.
 
 ## Roadmap and portability
 
-- **Advanced retrieval:** measure lexical/BM25 and hybrid baselines; evaluate
-  reranking against the same evidence requirements.
-- **LangGraph orchestration:** introduce explicit workflow orchestration only
-  after the simpler pipeline's behavior and failure handling are understood.
+- **Advanced retrieval:** evaluate reranking, candidate coverage and bounded
+  cross-policy retrieval against the completed dense/BM25/hybrid baselines.
+- **Orchestration:** evaluate whether the optional graph improves evidence
+  recovery; retain bounded calls and existing defaults until benefit is demonstrated.
 - **Evaluation:** expand the corpus/questions and human-reviewed evidence and
   answer-quality checks; distinguish structural support from semantic faithfulness.
 - **Hosted delivery:** Linux CPU packaging,
   hosted secrets, model provisioning, durable retrieval state and protected access.
 
-Replit import/deployment is not complete. Current Linux x86_64 lock metadata
+Controlled Replit offline-preview configuration is implemented in [.replit](.replit)
+and the [offline launcher](scripts/run_replit_offline.sh); live hosted RAG
+deployment remains unvalidated. The reviewed 35-package UI-only export is
+unchanged and excludes model/vector/graph packages. Current full-stack Linux
+x86_64 lock metadata
 selects roughly 2.46 GiB of Torch/NVIDIA wheel downloads before other packages,
 although embeddings run on CPU. No CPU-wheel migration or dependency-pin change
 has been made. Hosted memory/startup, Chroma durability, environment-only Pinecone

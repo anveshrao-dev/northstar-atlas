@@ -14,7 +14,7 @@ from northstar_atlas.local_embeddings import MiniLMProvider, MODEL_ID, MODEL_REV
 from .pinecone_cloud import CloudError, local_path, preflight, safe_call, validate_description
 from .pinecone_state import PublicationState
 from .pinecone_store import PineconeStore, PineconeTarget
-from .preparation import FrozenSnapshot, corpus_snapshot, freeze_snapshot, prepare_corpus
+from .preparation import FrozenSnapshot, corpus_snapshot, freeze_snapshot, load_frozen_snapshot, prepare_corpus
 from .records import IndexConfig, canonical_json, decode_chunk, metadata_for
 
 EXPECTED_COUNTS = {"HR-001": 19, "IT-001": 25, "PLAT-001": 46, "SRE-001": 35, "SEC-001": 34, "COMP-001": 30}
@@ -64,15 +64,8 @@ def save_snapshot(root: Path, snapshot: FrozenSnapshot) -> Path:
 
 def load_snapshot(root: Path, namespace: str) -> FrozenSnapshot:
     try:
-        data = json.loads(_snapshot_path(root, namespace).read_text())
-        config_data = data["config"]
-        model = EmbeddingModel(**config_data.pop("model"))
-        config = IndexConfig(model, **config_data)
-        records = [EmbeddedChunk(decode_chunk(r["id"], r["text"], r["metadata"], model),
-                                 tuple(r["vector"]), model) for r in data["records"]]
-        snapshot = freeze_snapshot(records, config, data["corpus_fingerprint"])
-        if snapshot.snapshot_id != data["snapshot_id"] or snapshot.namespace != namespace: raise ValueError
-        return snapshot
+        _snapshot_path(root, namespace)  # Preserve cloud workflow path/namespace guards.
+        return load_frozen_snapshot(root, namespace)
     except (OSError, ValueError, KeyError, TypeError):
         raise CloudError("frozen snapshot missing or invalid; do not regenerate over an existing generation") from None
 

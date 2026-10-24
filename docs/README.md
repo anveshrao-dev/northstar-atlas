@@ -16,6 +16,8 @@ artifact provenance and reproducibility; document titles describe their subject.
 | MiniLM refinement | Use the pinned tokenizer to refine 25 oversized chunks into a 189-chunk embedding view. Track source spans and duplicated context; retain the canonical representation. |
 | Embeddings | CPU MiniLM, 384 dimensions, L2 normalization and a 256-token input ceiling. Reject oversized/non-finite/incompatible inputs rather than truncate. |
 | Vector stores | Chroma persists locally; Pinecone uses managed immutable namespace publication. Both retain source/model identity, status, section citations and required siblings. Incomplete indexes cannot masquerade as ready. |
+| Lexical/hybrid retrieval | Standard-library BM25 over the same verified chunks; optional dense20 + BM2520 RRF60, final five; source/status/sibling checks remain mandatory. Dense remains the default. |
+| Optional graph | Explicit GraphQAService with router, retriever, assessor, generator and publication validator; at most two retrieval attempts and one inference request. No checkpoint, tools, autonomous actions or default UI switch. |
 | Context builder | Validate eligibility and source relationships, include required siblings, deduplicate, group evidence and budget labels/content together. Missing critical context blocks acceptance. |
 | Generation/grounding | Provider-independent structured requests; Nebius adapter with bounded transport behavior. Validate response shape, supplied citations, quotation spans and caller-reviewed requirements; do not confuse structural validation with semantics. |
 | QAService | Reuse initialized retrieval/model/provider resources; return immutable public success/error models separately from developer diagnostics. Support answer, clarify and abstain without treating infrastructure errors as policy claims. |
@@ -62,6 +64,9 @@ retains the findings without publishing account details or provider payloads.
 | Canonical chunks versus MiniLM input | 25 of 151 chunks exceeded 256 tokens. A separate refinement stage produced 189 embedding-ready chunks, with source reconstruction and explicit sibling dependencies. Exact reconstruction does not establish independent semantic completeness. |
 | Dense retrieval baseline | Across 15 development questions, direct Recall@5 was 55.22%, expanded recall 64.67%; full evidence coverage rose from 26.67% to 40.00%. Required siblings repaired fragmentation but not every missing cross-policy dependency. |
 | Chroma versus Pinecone | All 15 top-five chunk-ID sets and expanded sets matched; two ordering differences affected MRR. Managed storage did not improve evidence coverage in this experiment. |
+| Dense/BM25/hybrid | Expanded recall is 64.67%/66.78%/70.44%, with full coverage 6/15 for all three. Hybrid still misses AKS provisioning evidence, regresses on some cases and increases context/latency cost. |
+| Bounded graph | Optional five-node orchestration preserves eligibility and call bounds. Empty evidence or missing reviewed sources can trigger one alternate; ordinary nonempty evidence remains semantically not_assessed. |
+| Final structural/semantic probe | A fake ordinary claim inventing an approved retention duration passed citation/quotation checks when paired with a genuine source quote. Its semantic assessment fails; graph routing and source copying do not prove entailment. Full-prompt checks also block EVAL-006 in all strategies and EVAL-010 in hybrid. |
 | Quotation mismatch | A live Terraform quotation replaced line breaks with spaces and failed exact matching. Narrow whitespace normalization was added for contiguous source matching; changed/omitted/reordered words remain invalid. |
 | Incomplete main answer | Terraform answers could cite or quote a requirement without explaining all mandatory conditions. Structured obligations made main-answer coverage explicit; earlier incomplete responses remained rejected. |
 | Truncated JSON | A QAService Terraform response hit the 1,024-output-token ceiling. Incomplete JSON and `finish_reason="length"` remained rejected. A larger reservation addressed capacity but did not by itself solve exact extractive wording. |
@@ -103,6 +108,9 @@ production guarantee.
 | Local retrieval | [Chroma design](decisions/M2.4-Chroma-Design.md), [retrieval baseline](decisions/M2.5-Retrieval-Evaluation.md) |
 | Managed retrieval | [Pinecone design](decisions/M3.1-Pinecone-Design.md), [offline adapter](decisions/M3.2-Pinecone-Offline-Adapter.md), [backend comparison](decisions/M3.4-Chroma-Pinecone-Comparison.md) |
 | Generation preparation | [Provider decision](decisions/M4.1-LLM-Provider-Design.md), [context/citations](decisions/M4.2-Context-Citation-Design.md) |
+| Lexical and hybrid retrieval | [Design](decisions/M5.1-Hybrid-Retrieval-Design.md), [implementation and results](decisions/M5.2-Hybrid-Retrieval-Results.md) |
+| Optional bounded orchestration | [Design](decisions/M6.1-LangGraph-Design.md), [dependency resolution and implementation](decisions/M6.2-LangGraph-Implementation.md) |
+| Final engineering evaluation | [Retrieval, graph behavior and limitations](decisions/M7.1-Final-Evaluation.md) |
 
 The full M3.3, M4.3, M4.4, M8.1 and M8.2 operational histories and the publication
 audit are intentionally excluded from the proposed public set and ignored. They

@@ -28,6 +28,7 @@ from northstar_atlas.ingestion.refiner import RefinedPolicyChunk, refine_chunks
 from northstar_atlas.local_embeddings import MiniLMProvider, MODEL_ID, MODEL_REVISION
 from northstar_atlas.vector_store import ChromaStore, IndexConfig, SearchHit, corpus_snapshot, search_corpus
 from northstar_atlas.vector_store.records import context_ids, metadata_for
+from northstar_atlas.vector_store.contracts import RetrievalHit, score_fields
 
 
 K = 5
@@ -113,7 +114,7 @@ def _chunk_record(chunk: PolicyChunk, model: EmbeddingModel) -> dict:
     return {"chunk_id": chunk.chunk_id, "text": chunk.text, **metadata_for(chunk, model)}
 
 
-def score_question(question: dict, hits: Sequence[SearchHit], catalog: EvidenceCatalog, *,
+def score_question(question: dict, hits: Sequence[RetrievalHit], catalog: EvidenceCatalog, *,
                    reference_date: date, latency_seconds: float) -> dict:
     """Pure deterministic scoring of at most five ranked hits and their siblings.
 
@@ -150,12 +151,10 @@ def score_question(question: dict, hits: Sequence[SearchHit], catalog: EvidenceC
         return True
 
     for rank, hit in enumerate(hits[:K], 1):
-        if not math.isfinite(hit.cosine_distance):
-            raise ValueError("nonfinite retrieval distance")
+        scores = score_fields(hit)
         chunk = hit.chunk
         accepted = valid(chunk, "direct")
-        retrieved.append({**_chunk_record(chunk, hit.model), "rank": rank,
-                          "cosine_distance": hit.cosine_distance, "cosine_similarity": hit.cosine_similarity,
+        retrieved.append({**_chunk_record(chunk, hit.model), "rank": rank, **scores,
                           "eligible_verified": accepted})
         if accepted:
             direct.append(chunk)
@@ -172,8 +171,10 @@ def score_question(question: dict, hits: Sequence[SearchHit], catalog: EvidenceC
                 sibling_ok = False
             sibling_ok = sibling_ok and accepted
             if sibling.chunk_id not in sibling_records:
+                unranked = ({"cosine_distance": None, "cosine_similarity": None}
+                            if isinstance(hit, SearchHit) else {"score_kind": None})
                 sibling_records[sibling.chunk_id] = {**_chunk_record(sibling, hit.model), "rank": None,
-                    "cosine_distance": None, "cosine_similarity": None, "trigger_ranks": [],
+                    **unranked, "trigger_ranks": [],
                     "valid_trigger_ranks": [], "occurrences": [], "eligible_verified": False}
             record = sibling_records[sibling.chunk_id]
             record["trigger_ranks"].append(rank)

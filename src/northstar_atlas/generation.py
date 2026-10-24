@@ -16,7 +16,7 @@ from northstar_atlas.grounding import (AbstentionRequirements, ConditionCoverage
                                       validate_abstention, validate_obligations)
 from northstar_atlas.llm import (GenerationLimits, GenerationRequest, GenerationResponse,
                                  LLMProvider, MODEL_ID, QwenTokenBound, canonical_json)
-from northstar_atlas.vector_store.contracts import RetrievalStore, SearchHit
+from northstar_atlas.vector_store.contracts import RetrievalStore, RetrievalHit
 
 PROMPT_VERSION = "grounded-policy-v4"
 SCHEMA_VERSION = "grounded-answer-v2"
@@ -243,7 +243,7 @@ def _reviewed_inputs(obligations: tuple[EvidenceObligation, ...],
     return validate_obligations(obligations, package)
 
 
-def prepare_answer(question: str, hits: tuple[SearchHit, ...] | list[SearchHit], *,
+def prepare_answer(question: str, hits: tuple[RetrievalHit, ...] | list[RetrievalHit], *,
                    mode: RetrievalMode = "approved_only", reference_date: date,
                    limits: GenerationLimits = GenerationLimits(), model: str = MODEL_ID,
                    corpus_fingerprint: str | None = None,

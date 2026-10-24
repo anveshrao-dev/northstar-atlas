@@ -9,7 +9,6 @@ from dataclasses import asdict, fields
 from datetime import date
 import hashlib
 import json
-import math
 import re
 
 from northstar_atlas.evidence import (
@@ -21,7 +20,7 @@ from northstar_atlas.ingestion.document_loader import APPROVED, DRAFT, Retrieval
 from northstar_atlas.ingestion.refiner import (
     RefinedPolicyChunk, RefinementError, TextSegment, reconstruct,
 )
-from northstar_atlas.vector_store.contracts import SearchHit
+from northstar_atlas.vector_store.contracts import RetrievalHit, score_fields
 from northstar_atlas.vector_store.records import (
     IndexConfig, VectorStoreError, context_ids, metadata_for, original_id, validate_context,
 )
@@ -153,7 +152,7 @@ def _render(groups: Sequence[EvidenceGroup], mode: RetrievalMode, as_of: date) -
     return _json(payload)
 
 
-def build_context(hits: Sequence[SearchHit], *, counter: ContextTokenCounter, max_tokens: int,
+def build_context(hits: Sequence[RetrievalHit], *, counter: ContextTokenCounter, max_tokens: int,
                   reference_date: date, mode: RetrievalMode = "approved_only") -> ContextPackage:
     """Prepare eligible whole evidence groups within an explicit evidence-only budget.
 
@@ -184,8 +183,10 @@ def build_context(hits: Sequence[SearchHit], *, counter: ContextTokenCounter, ma
     ranks: dict[str, int] = {}
     models = []
     for rank, hit in enumerate(hits, 1):
-        if not isinstance(hit, SearchHit) or not math.isfinite(hit.cosine_distance):
-            raise ContextError("invalid ranked search result")
+        try:
+            score_fields(hit)
+        except VectorStoreError:
+            raise ContextError("invalid ranked search result") from None
         models.append(hit.model)
         ranks.setdefault(hit.chunk.chunk_id, rank)
         for c in (hit.chunk, *hit.context):
