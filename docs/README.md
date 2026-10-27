@@ -4,8 +4,9 @@ This is the public engineering overview for the local Northstar Atlas MVP.
 The [project README](../README.md) contains current operation and setup guidance.
 Decision records below describe the state at the time of each experiment or
 design. Dated proposals and prices are historical, not current operating guidance.
-Existing M-prefixed filenames and experiment identifiers remain stable for links,
-artifact provenance and reproducibility; document titles describe their subject.
+Historical milestone and experiment identifiers remain unchanged for artifact
+provenance and reproducibility. Descriptive report filenames identify their scope;
+dated contents retain the original methodology and findings.
 
 ## Current component boundaries
 
@@ -127,7 +128,7 @@ production guarantee.
 | Lexical and hybrid retrieval | [Design](decisions/M5.1-Hybrid-Retrieval-Design.md), [implementation and results](decisions/M5.2-Hybrid-Retrieval-Results.md) |
 | Graph profiles and UI integration | [Original bounded design](decisions/M6.1-LangGraph-Design.md), [dependency resolution, routing/grading, semantic checking and integration history](decisions/M6.2-LangGraph-Implementation.md) |
 | Controlled live execution | [Shared durable budget](decisions/Shared-Durable-Live-Budget.md), [conditional graph wiring and activation prerequisites](decisions/Controlled-Live-Graph-Wiring.md) |
-| Final engineering evaluation | [Retrieval, graph behavior and limitations](decisions/M7.1-Final-Evaluation.md) |
+| Final engineering evaluation | [Retrieval, graph behavior and limitations](decisions/Retrieval-and-Bounded-Graph-Evaluation.md) |
 
 The full M3.3, M4.3, M4.4, M8.1 and M8.2 operational histories and the publication
 audit are intentionally excluded from the proposed public set and ignored. They

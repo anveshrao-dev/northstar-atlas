@@ -357,7 +357,7 @@ in the [engineering guide](docs/README.md#experiments-and-observed-limitations).
 
 ### Retrieval and graph evaluation
 
-The [final local evaluation](docs/decisions/M7.1-Final-Evaluation.md) uses the
+The [final local evaluation](docs/decisions/Retrieval-and-Bounded-Graph-Evaluation.md) uses the
 same frozen questions, source snapshot and complete-section scoring:
 
 | Strategy | Direct Recall@5 | Expanded Recall@5 | Full expanded coverage |
