@@ -31,6 +31,9 @@ class LiveGraphTests(unittest.TestCase):
             NORTHSTAR_UI_ENABLE_GRAPH='1', NORTHSTAR_PRIVATE_PREVIEW_CONFIRMED='1',
             NORTHSTAR_BUDGET_SCOPE=SCOPE, NORTHSTAR_BILLING_SCOPE=BILLING,
             NORTHSTAR_BUDGET_MAX_ATTEMPTS='8'))
+        # Never inherit a real operator ledger while testing synthetic checkouts.
+        os.environ.pop('NORTHSTAR_BUDGET_AUTHORITY_ROOT', None)
+        os.environ.pop('NORTHSTAR_BUDGET_AUTHORITY_ROOT_CONFIRMED', None)
         self.enterContext(patch.object(socket.socket, 'connect', side_effect=AssertionError('network blocked')))
         self.enterContext(patch.object(socket.socket, 'connect_ex', side_effect=AssertionError('network blocked')))
         self.path = install(self.root, document(calls=8))
@@ -103,6 +106,25 @@ class LiveGraphTests(unittest.TestCase):
         self.assertEqual(self.created, [dict(allow_paid=True, max_attempts=1, requires_budget=True)])
         self.assertEqual(owner.submit(self.request(), consent=True).code, 'duplicate')
         owner.close(); self.assertEqual(len(self.closed), 1)
+
+    def test_external_budget_authority_keeps_graph_and_assets_bound_to_application(self):
+        authority = checkout(self)
+        local_path = self.path; local_before = local_path.read_bytes()
+        self.path = install(authority, document(calls=8))
+        self.enterContext(patch.dict(os.environ,
+            NORTHSTAR_BUDGET_AUTHORITY_ROOT=str(authority),
+            NORTHSTAR_BUDGET_AUTHORITY_ROOT_CONFIRMED=str(authority)))
+        self.budget = configured_budget(self.root)
+        self.wire(judgments=('uncertain', 'relevant'), semantics=('incomplete', 'supported'))
+        result = self.owner().submit(self.request(), consent=True)
+        self.assertEqual(result.kind, 'answer')
+        self.assertEqual(result.coverage, 'not_assessed')
+        self.assertEqual(self.budget.root, self.root)
+        self.assertEqual(self.budget.inspect_history().attempts_consumed, 7)
+        self.assertEqual(len(self.sent), 7)
+        self.assertEqual(local_path.read_bytes(), local_before)
+        self.assertEqual(json.loads(self.path.read_text())['workflows'][0]['status'], 'closed')
+        live_graph.verify_graph_assets.assert_called_with(self.root)
 
     def test_two_sessions_share_resources_not_invocation_handles_or_history(self):
         self.wire()

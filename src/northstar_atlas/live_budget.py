@@ -19,6 +19,7 @@ import stat
 import tempfile
 from threading import get_ident
 from types import MappingProxyType
+from typing import Callable
 from urllib.parse import urlsplit
 
 from .llm import MODEL_ID, GenerationRequest, GenerationResponse, QwenTokenBound, TokenUsage, canonical_json
@@ -29,6 +30,7 @@ GRAPH = 'llm_routing_grading_semantic_v1'
 UNIT = Decimal('0.000001')
 MAX_ATTEMPTS = 3
 MAX_COST = Decimal('0.100000')
+_AUTHORITY_ENV = ('NORTHSTAR_BUDGET_AUTHORITY_ROOT', 'NORTHSTAR_BUDGET_AUTHORITY_ROOT_CONFIRMED')
 _SLOTS = MappingProxyType({
     LINEAR: (('generator', 0, 30720, 2048),),
     GRAPH: (('router', 0, 7936, 256), ('grader', 1, 28672, 4096),
@@ -199,24 +201,74 @@ class WorkflowRequest:
             self.backend, self.reference_date.isoformat(), corpus_hash, MODEL_ID]).encode()).hexdigest()
 
 
+def _authority_root(application_root, requested, confirmed):
+    """Trusted operator paths only; confirmation names one root, not a blanket opt-in."""
+    try:
+        if requested is None:
+            _require(confirmed is None)
+            return application_root
+        raw = os.fspath(requested)
+        _require(isinstance(raw, str) and bool(raw) and raw == raw.strip())
+        path = Path(raw)
+        # Reject aliases/traversal instead of normalizing them into authorization.
+        _require(path.is_absolute() and '..' not in path.parts and str(path) == raw)
+        if path != application_root or confirmed is not None:
+            _require(confirmed is not None and os.fspath(confirmed) == raw)
+        _require(path.resolve(strict=True) == path and path.is_dir())
+        return path
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise BudgetError('budget authority is invalid or unauthorized; inference denied') from None
+
+
 class PersistentBudget:
     def __init__(self, root: Path, *, scope: str | None = None, billing_scope: str | None = None,
-                 policy: BudgetPolicy = BudgetPolicy(), clock=_now, before_request=None):
+                 policy: BudgetPolicy = BudgetPolicy(), clock=_now, before_request=None,
+                 authority_root: Path | str | None = None,
+                 authorized_authority_root: Path | str | None = None):
+        # root always identifies application code, corpus, model and retrieval assets.
+        # The separate authority controls only existing budget persistence files.
         self.root = validate_project_root(Path(root))
-        self.directory = contained_path(self.root, '.local/controlled-live')
-        self.path = contained_path(self.root, '.local/controlled-live/budget.json')
-        self.lock_path = contained_path(self.root, '.local/controlled-live/budget.lock')
-        self.pending_path = contained_path(self.root, '.local/controlled-live/settlement.pending')
+        self.authority_root = _authority_root(self.root, authority_root, authorized_authority_root)
+        try:
+            self.directory = contained_path(self.authority_root, '.local/controlled-live')
+            self.path = contained_path(self.authority_root, '.local/controlled-live/budget.json')
+            self.lock_path = contained_path(self.authority_root, '.local/controlled-live/budget.lock')
+            self.pending_path = contained_path(self.authority_root, '.local/controlled-live/settlement.pending')
+        except ValueError:
+            raise BudgetError('budget authority paths are invalid; inference denied') from None
         self.scope, self.billing_scope, self.policy = scope, billing_scope, policy
         self.clock, self.before_request = clock, before_request
         self._blocked = False
+        self._configured_authority = None
+        self._path_identities = {}
 
     def _paths(self):
+        if self._configured_authority is not None:
+            _require(tuple(os.environ.get(name) for name in _AUTHORITY_ENV) == self._configured_authority)
+        identities = {}
+        for p in (self.authority_root, self.authority_root / '.local'):
+            contained_path(self.authority_root, str(p.relative_to(self.authority_root)))
+            info = p.lstat()
+            _require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
+                     and not stat.S_IMODE(info.st_mode) & 0o7022)
+            identities[p] = (info.st_dev, info.st_ino)
         for p in (self.directory, self.path, self.lock_path):
-            contained_path(self.root, str(p.relative_to(self.root)))
+            contained_path(self.authority_root, str(p.relative_to(self.authority_root)))
             info = p.lstat()
             kind = stat.S_ISDIR if p == self.directory else stat.S_ISREG
-            _require(kind(info.st_mode) and stat.S_IMODE(info.st_mode) == (0o700 if p == self.directory else 0o600))
+            _require(kind(info.st_mode) and info.st_uid == os.geteuid()
+                     and stat.S_IMODE(info.st_mode) == (0o700 if p == self.directory else 0o600)
+                     and (p == self.directory or info.st_nlink == 1))
+            # Atomic ledger replacement is expected; replacing its lock/parents is not.
+            if p != self.path: identities[p] = (info.st_dev, info.st_ino)
+        _require(not self._path_identities or self._path_identities == identities)
+        self._path_identities = identities
+
+    def _opened_file(self, fd, path):
+        info, current = os.fstat(fd), path.lstat()
+        _require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                 and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1
+                 and (info.st_dev, info.st_ino) == (current.st_dev, current.st_ino))
 
     @contextmanager
     def _locked(self):
@@ -231,20 +283,37 @@ class PersistentBudget:
             except OSError:
                 raise BudgetError('budget is busy; no request was sent') from None
             try:
+                self._paths()
+                self._opened_file(lock.fileno(), self.lock_path)
                 _require(not self._blocked and not os.path.lexists(self.pending_path))
                 yield
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
-    def _read(self, *, current=True):
+    def _read_bytes(self):
+        """Bounded, identity-checked read; callers already hold the existing lock."""
         try:
             self._paths()
             fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd) as stream:
+            with os.fdopen(fd, 'rb') as stream:
+                self._opened_file(stream.fileno(), self.path)
                 raw = stream.read(4_000_001)
             _require(len(raw) <= 4_000_000)
-            value = json.loads(raw, object_pairs_hook=_unique,
+            return raw
+        except (OSError, ValueError):
+            raise BudgetError('budget missing or inaccessible; inference denied') from None
+
+    def _read(self, *, current=True):
+        try:
+            value = json.loads(self._read_bytes(), object_pairs_hook=_unique,
                                parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+            return self._validate_document(value, current=current)
+        except (ValueError, TypeError, RecursionError):
+            raise BudgetError('budget missing, corrupt, incompatible or expired; inference denied') from None
+
+    def _validate_document(self, value, *, current=True):
+        """Same schema checks for stored history and an operator's unwritten candidate."""
+        try:
             if isinstance(value, dict) and value.get('version') == 1:
                 counts, cost = _legacy(value)
                 _require(not current)  # Read-only compatibility; never silently migrate.
@@ -322,10 +391,13 @@ class PersistentBudget:
             self._paths()
             fd, name = tempfile.mkstemp(dir=self.directory, prefix='reservation-', suffix='.tmp')
             temporary = Path(name)
-            with os.fdopen(fd, 'w') as stream:
+            with os.fdopen(fd, 'wb') as stream:
                 os.fchmod(stream.fileno(), 0o600)
-                json.dump(value, stream, sort_keys=True, separators=(',', ':'), allow_nan=False)
+                raw = value if isinstance(value, bytes) else json.dumps(
+                    value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode('utf-8')
+                stream.write(raw)
                 stream.flush(); os.fsync(stream.fileno())
+            self._paths()
             os.replace(temporary, self.path)
             self._sync_directory()
         except (OSError, ValueError):
@@ -344,7 +416,7 @@ class PersistentBudget:
     def _mark_settlement(self):
         """A durable guard prevents an ambiguous closed write from releasing funds."""
         self._paths()
-        contained_path(self.root, str(self.pending_path.relative_to(self.root)))
+        contained_path(self.authority_root, str(self.pending_path.relative_to(self.authority_root)))
         fd = os.open(self.pending_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
             os.fsync(fd)
@@ -352,12 +424,17 @@ class PersistentBudget:
             os.close(fd)
         self._sync_directory()
 
-    def _settle(self, value):
+    def _settle(self, value, *, verify: Callable[[], None] | None = None,
+                before_replace: Callable[[], None] | None = None):
         # Until both the ledger commit and guard removal are durable, no other
         # process may authorize a request. Never auto-recover this marker.
         try:
             self._mark_settlement()
+            if before_replace is not None:
+                before_replace()  # Transition receipts are protected by the same guard.
             self._write(value)
+            if verify is not None:
+                verify()  # Transition readback must succeed before releasing the guard.
             self.pending_path.unlink()
             self._sync_directory()
         except (OSError, ValueError):
@@ -460,6 +537,7 @@ class WorkflowReservation:
     def check_setup(self, budget, *, profile, backend):
         """Validate a live resource opener under the already-held workflow lock."""
         self.check_coordinator(budget)
+        budget._paths()
         _require(self._flow['profile'] == profile and self._flow['backend'] == backend)
         _pricing(self._price, self._budget.clock())
 
@@ -527,6 +605,11 @@ def configured_budget(root):
     attempts = os.environ.get('NORTHSTAR_BUDGET_MAX_ATTEMPTS', str(MAX_ATTEMPTS))
     _require(isinstance(attempts, str) and re.fullmatch(r'[1-9][0-9]{0,4}', attempts))
     policy = BudgetPolicy(max_attempts=int(attempts))
-    return PersistentBudget(root, scope=os.environ.get('NORTHSTAR_BUDGET_SCOPE'),
-                            billing_scope=os.environ.get('NORTHSTAR_BILLING_SCOPE'),
-                            policy=policy, before_request=require_private_preview)
+    authority = tuple(os.environ.get(name) for name in _AUTHORITY_ENV)
+    budget = PersistentBudget(root, scope=os.environ.get('NORTHSTAR_BUDGET_SCOPE'),
+                              billing_scope=os.environ.get('NORTHSTAR_BILLING_SCOPE'),
+                              policy=policy, before_request=require_private_preview,
+                              authority_root=authority[0], authorized_authority_root=authority[1])
+    # Cached resources must fail closed if the operator changes/revokes selection.
+    budget._configured_authority = authority
+    return budget
