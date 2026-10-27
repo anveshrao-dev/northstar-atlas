@@ -52,15 +52,32 @@ being presented as policy abstentions.
 | Generation | Nebius Token Factory, `Qwen/Qwen3-30B-A3B-Instruct-2507`, HTTPX adapter |
 | Answer contract | `grounded-answer-v2`, including caller-reviewed obligations and evidence-backed abstention |
 | Retrieval strategies | Dense default; standard-library BM25; optional dense20 + BM2520 RRF60, final top 5 |
-| Optional orchestration | LangGraph 1.2.16; five nodes, at most two retrieval attempts and one inference request |
+| Optional orchestration | LangGraph 1.2.16; bounded, routing/grading and semantic profiles with explicit call limits |
 | Browser interface | Streamlit 1.66.1; separate answer, Sources, Evidence details and Validation details |
 | Testing | Standard-library unittest; deterministic providers and optional cached-model checks |
 
-BM25, hybrid retrieval and `GraphQAService` are implemented opt-in library paths.
-The existing QAService, CLI and Streamlit retain dense retrieval and linear
-orchestration by default. Graph execution requires the optional `orchestration`
-extra; its transitive langchain-core package is execution plumbing, not a new
-model adapter. Reranking, query rewriting and autonomous actions are deferred.
+QAService, CLI and Streamlit retain dense retrieval and linear orchestration by
+default. BM25, hybrid retrieval and the graph profiles are optional:
+
+| Workflow | Behavior | LLM-call bound per question |
+| --- | --- | --- |
+| Linear `QAService` / Standard RAG | Retrieve, prepare evidence, generate and deterministically validate | At most 1 |
+| `bounded_v1` graph | Five-node workflow with deterministic assessment and at most two retrieval attempts | At most 1 |
+| Phase A `llm_routing_grading_v1` | LLM category routing and batched relevance grading before generation; at most two retrieval attempts | 3 on the normal answer path; at most 4 |
+| `llm_routing_grading_semantic_v1` | Adds semantic assessment and at most one regeneration after an unambiguous negative check | 4 on the normal answer path; at most 7 |
+
+The semantic profile assesses support, authority, conditions and answer completeness
+against admitted evidence; it cannot establish completeness against missing sources.
+Deterministic validation remains mandatory, and ordinary-query reviewed-obligation
+coverage stays `not_assessed`. Malformed checks, unclear judgments and exhausted
+regeneration withhold the candidate.
+
+Streamlit exposes an optional LangGraph RAG workflow, with live execution disabled
+by default and subject to controlled authorization. Its Chroma-only live wiring is
+implemented and offline validated; the seven-call workflow has **not been verified
+live**. Graph execution requires the optional `orchestration` extra; its transitive
+langchain-core package is execution plumbing, not a new model adapter. Reranking,
+query rewriting and autonomous actions are deferred.
 See the [architecture and experiment guide](docs/README.md).
 
 ## Corpus and policy authority
@@ -239,8 +256,20 @@ chat history is display-only. The UI permits at most five attempted questions pe
 server process, one request at a time, with no automatic retries. Its budgets are
 32,768 context tokens, 2,048 output tokens and a 512-token margin. Prompt preparation
 checks the full reservation; MiniLM's separate 256-token query limit still applies.
-A process restart resets the in-memory allowance: this is not a durable spending
-cap or authentication system.
+A process restart resets this process-local attempt counter: it is not a durable
+spending cap or authentication system. These are Standard RAG's local UI limits,
+not authorization for a multi-call graph workflow.
+
+The separate [controlled-live budget](docs/decisions/Shared-Durable-Live-Budget.md)
+shares durable accounting between linear and semantic-graph requests. Graph
+execution reserves the complete seven-call envelope—184,064 input-bound plus
+20,736 output tokens, 204,800 in aggregate—before provider construction or I/O.
+Current pricing, ledger capacity, private-preview access, explicit operator
+authorization and session consent are required; uncertain outcomes retain the
+reservation. The default three-call lifetime allowance cannot admit a seven-call
+workflow. The implemented [conditional graph gate](docs/decisions/Controlled-Live-Graph-Wiring.md)
+does not approve new limits, migrate a ledger or activate Replit. Hosted activation
+and real graph validation require a separate review.
 
 ### Optional Pinecone
 
@@ -262,8 +291,8 @@ an account. Store nonsecret target settings privately in the ignored file
 
 This example is intentionally incomplete. Azure/eastus2, 384 dimensions and cosine
 remain the supported design. Unknown/duplicate fields, malformed identity and
-conflicts with `.env` are rejected. Configuration does not constitute account
-confirmation or permission to create a resource.
+conflicts with credential configuration are rejected. Configuration does not
+constitute account confirmation or permission to create a resource.
 
 An authorized existing setup requires the Pinecone extra, privately configured
 key/index/cloud/region, a compatible published namespace, and validated local
@@ -275,10 +304,17 @@ There is no automatic confirmation or resource selection. Historical
 `project-confirmation.json` alone is not sufficient for the new index-bound check.
 The existing development target was migrated offline while preserving that
 original record; a new checkout/account needs its own explicit confirmation.
-The current
-Pinecone loader requires `.env`; it is not environment-only yet. After verifying
-that setup and approving remote reads, `NORTHSTAR_UI_ENABLE_PINECONE=1` exposes
-Pinecone in the UI. Selection alone does not connect; a live submission can incur
+When `.env` is absent, the Pinecone loader accepts a complete validated process
+environment containing `PINECONE_API_KEY`, `PINECONE_INDEX_NAME`, `PINECONE_CLOUD`
+and `PINECONE_REGION`; Replit Secrets can supply these variables. Missing, partial,
+empty or malformed configurations are rejected. When `.env` is present, it must
+remain within the validated checkout, ignored and untracked/unstaged. Existing
+parsing, duplicate-field and environment/file conflict checks apply; environment
+values cannot repair an incomplete file. Both paths require the same reviewed
+target, owner confirmation, credential-fingerprint binding and publication checks.
+After verifying that setup and approving remote reads,
+`NORTHSTAR_UI_ENABLE_PINECONE=1` exposes Pinecone in the UI. Selection alone does not
+connect; a live submission can incur
 remote read usage. Pinecone does not remove the local query-embedding requirement.
 
 ## Tests and evaluation
@@ -342,7 +378,9 @@ Experimental retrieval requires an existing verified local chunk snapshot;
 missing snapshots stop rather than trigger downloads or reindexing. See
 [retrieval interfaces and reproduction](docs/decisions/M5.2-Hybrid-Retrieval-Results.md)
 and [graph setup and limits](docs/decisions/M6.2-LangGraph-Implementation.md).
-The full existing suite passed 527 tests with cached-model checks enabled.
+At that evaluation checkpoint, the suite passed 527 tests with cached-model checks
+enabled. Subsequent offline graph and budget results are recorded in the linked
+implementation reports; they do not establish live graph behavior.
 
 ## Repository map
 
@@ -378,7 +416,8 @@ unchanged and excludes model/vector/graph packages. Current full-stack Linux
 x86_64 lock metadata
 selects roughly 2.46 GiB of Torch/NVIDIA wheel downloads before other packages,
 although embeddings run on CPU. No CPU-wheel migration or dependency-pin change
-has been made. Hosted memory/startup, Chroma durability, environment-only Pinecone
-configuration, public-interface binding and durable access/budget controls need
-separate validation. Do not expose the local live UI publicly by changing only
-its bind address. No open-source license has been selected yet.
+has been made. Environment-only Pinecone credentials and controlled-live access/
+budget wiring are implemented and offline tested. Hosted memory/startup, Chroma
+durability, private access and durable-ledger behavior still require separate
+Replit validation and activation approval. Do not expose the local live UI publicly
+by changing only its bind address. No open-source license has been selected yet.
