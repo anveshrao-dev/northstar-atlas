@@ -10,6 +10,22 @@ from northstar_atlas.ingestion.chunker import PolicyChunk
 from northstar_atlas.ingestion.document_loader import RetrievalMode
 from .records import VectorStoreError
 
+DEPARTMENTS = (
+    'Human Resources', 'IT Operations', 'Platform Engineering / DevOps',
+    'Site Reliability Engineering', 'Information Security', 'Compliance',
+)
+
+
+def validate_department_scope(scope: tuple[str, ...] | None) -> tuple[str, ...] | None:
+    """Trusted metadata values only; scope never substitutes for eligibility."""
+    if scope is None:
+        return None
+    if (not isinstance(scope, tuple) or not scope
+            or any(not isinstance(value, str) or value not in DEPARTMENTS for value in scope)
+            or len(set(scope)) != len(scope)):
+        raise VectorStoreError('invalid department scope')
+    return tuple(value for value in DEPARTMENTS if value in scope)
+
 
 @dataclass(frozen=True)
 class SearchHit:
@@ -74,4 +90,5 @@ def score_fields(hit: RetrievalHit) -> dict:
 class RetrievalStore(Protocol):
     def search(self, query: str, provider: EmbeddingProvider | None, *, corpus_fingerprint: str,
                mode: RetrievalMode = "approved_only", top_k: int = 5,
-               reference_date: date | None = None) -> tuple[RetrievalHit, ...]: ...
+               reference_date: date | None = None,
+               department_scope: tuple[str, ...] | None = None) -> tuple[RetrievalHit, ...]: ...

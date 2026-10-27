@@ -5,7 +5,7 @@ import re
 import unicodedata
 
 from .catalog import ChunkCatalog, eligible, search_options
-from .contracts import RankedHit
+from .contracts import RankedHit, validate_department_scope
 from .records import VectorStoreError
 
 TOKENIZER_VERSION = "unicode-word-v1"
@@ -28,10 +28,12 @@ class BM25Store:
             raise VectorStoreError("catalog contains no lexical tokens")
 
     def search(self, query, provider=None, *, corpus_fingerprint, mode="approved_only", top_k=5,
-               reference_date=None) -> tuple[RankedHit, ...]:
+               reference_date=None, department_scope=None) -> tuple[RankedHit, ...]:
+        scope = validate_department_scope(department_scope)
         as_of = search_options(query, mode, top_k, reference_date)
         self.catalog.check_current(corpus_fingerprint)
-        chunks = tuple(c for c in self.catalog.chunks if eligible(c, mode, as_of))
+        chunks = tuple(c for c in self.catalog.chunks if eligible(c, mode, as_of)
+                       and (scope is None or c.department in scope))
         query_terms = sorted(set(tokenize(query)))
         if not chunks or not query_terms:
             return ()

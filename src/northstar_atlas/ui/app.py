@@ -11,13 +11,17 @@ from northstar_atlas.ingestion.document_loader import DRAFT
 from northstar_atlas.ui.demo import SCENARIOS
 from northstar_atlas.project import ProjectRootError, contained_path, validate_project_root
 from northstar_atlas.ui.runtime import (
-    Conversation, MAX_QUESTION_CHARS, PublicView, ResourceOwner, Submission,
+    Conversation, LANGGRAPH_WORKFLOW, MAX_QUESTION_CHARS, PublicView, ResourceOwner,
+    STANDARD_WORKFLOW, Submission,
+    graph_operator_authorized,
 )
 
 
 @st.cache_resource(show_spinner=False, on_release=lambda owner: owner.close())
-def resource_owner(root: str, live_enabled: bool, pinecone_enabled: bool) -> ResourceOwner:
-    owner = ResourceOwner(Path(root), live_enabled=live_enabled, pinecone_enabled=pinecone_enabled)
+def resource_owner(root: str, live_enabled: bool, pinecone_enabled: bool,
+                   graph_enabled: bool = False) -> ResourceOwner:
+    owner = ResourceOwner(Path(root), live_enabled=live_enabled, pinecone_enabled=pinecone_enabled,
+                          graph_enabled=graph_enabled)
     atexit.register(owner.close)
     return owner
 
@@ -95,7 +99,8 @@ def main() -> None:
     # Server gates are deliberately process environment settings, not .env or UI toggles.
     live_enabled = os.environ.get('NORTHSTAR_UI_ENABLE_LIVE') == '1'
     pinecone_enabled = os.environ.get('NORTHSTAR_UI_ENABLE_PINECONE') == '1'
-    owner = resource_owner(str(root), live_enabled, pinecone_enabled)
+    graph_enabled = graph_operator_authorized()
+    owner = resource_owner(str(root), live_enabled, pinecone_enabled, graph_enabled)
     if 'conversation' not in st.session_state:
         st.session_state.conversation = Conversation()
     conversation = st.session_state.conversation
@@ -109,6 +114,19 @@ def main() -> None:
         st.header('Workspace')
         experience = st.radio('Experience', ('Offline demo', 'Live Q&A'), key='experience', disabled=pending)
         demo = experience == 'Offline demo'
+        if demo:
+            workflow = STANDARD_WORKFLOW
+        else:
+            workflow = st.selectbox(
+                'Answer workflow', (STANDARD_WORKFLOW, LANGGRAPH_WORKFLOW), key='workflow',
+                format_func=lambda value: {
+                    STANDARD_WORKFLOW: 'Standard RAG · default',
+                    LANGGRAPH_WORKFLOW: 'LangGraph RAG · semantic checks',
+                }[value], disabled=pending)
+            if workflow == LANGGRAPH_WORKFLOW and not graph_enabled:
+                st.warning('LangGraph live execution is disabled pending shared budget coordinator and security activation approval. No provider request will be sent.')
+            elif workflow == LANGGRAPH_WORKFLOW:
+                st.caption('LangGraph requires Chroma and a full durable workflow reservation. Budget, pricing, evidence and private-access checks must pass before execution.')
         mode = st.selectbox('Policy scope', ('approved_only', 'draft_review'), key='mode', disabled=pending,
                             format_func=lambda v: {'approved_only': 'Approved policies only',
                                                    'draft_review': 'Approved + proposed drafts'}[v])
@@ -121,7 +139,10 @@ def main() -> None:
             st.warning('Connecting to Pinecone may incur read usage. Selecting it alone does not connect.')
         consent = st.checkbox('Enable paid answers for this session', key='paid_opt_in',
                               disabled=demo or not live_enabled or pending)
-        st.caption('Live use: at most five attempted questions per server process. No automatic retries.')
+        if os.environ.get('NORTHSTAR_CONTROLLED_LIVE') == '1':
+            st.caption('Controlled live use requires a durable budget reservation. Limits persist across restarts. No automatic retries.')
+        else:
+            st.caption('Live use: at most five attempted questions per server process. No automatic retries.')
         if not live_enabled:
             st.caption('Live inference is disabled by the server. Offline demo needs no credentials.')
         st.button('Clear conversation', key='clear_history', on_click=conversation.clear, disabled=pending)
@@ -140,7 +161,8 @@ def main() -> None:
 
     def queue(question: str) -> None:
         conversation.queue(Submission(uuid4().hex, question, mode, backend,
-                                      datetime.now(timezone.utc).date(), demo=demo))
+                                      datetime.now(timezone.utc).date(), demo=demo,
+                                      workflow=workflow))
 
     if demo:
         scenarios = tuple(s for s in SCENARIOS if mode == 'draft_review' or s.mode == 'approved_only')
@@ -158,7 +180,9 @@ def main() -> None:
         queue(st.session_state.question)
 
     st.chat_input('Ask about a policy…', key='question', max_chars=MAX_QUESTION_CHARS,
-                  disabled=pending or (not demo and not (live_enabled and consent)), on_submit=queue_chat)
+                  disabled=(pending or (not demo and not (live_enabled and consent))
+                            or (not demo and workflow == LANGGRAPH_WORKFLOW
+                                and (not graph_enabled or backend != 'chroma'))), on_submit=queue_chat)
     if conversation.pending is not None:
         with st.spinner('Preparing demonstration…' if conversation.pending.demo else 'Retrieving evidence and preparing a validated response…'):
             conversation.run_pending(owner, consent=consent)
@@ -168,7 +192,12 @@ def main() -> None:
         with st.chat_message('user'):
             st.text(turn.submission.question, width='stretch')
         with st.chat_message('assistant'):
-            origin = 'Offline demonstration' if turn.submission.demo else f'Live · {turn.submission.backend}'
+            if turn.submission.demo:
+                origin = 'Offline demonstration'
+            else:
+                workflow_label = ('LangGraph RAG' if turn.submission.workflow == LANGGRAPH_WORKFLOW
+                                  else 'Standard RAG')
+                origin = f'Live · {turn.submission.backend} · {workflow_label}'
             st.caption(f'{origin} · {turn.submission.mode}')
             render_view(turn.view)
     if not conversation.history:

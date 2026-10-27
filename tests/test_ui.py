@@ -76,6 +76,9 @@ class UIRuntimeTests(unittest.TestCase):
     def request(self, ident='one', backend='chroma', mode='approved_only'):
         return self.ui.Submission(ident, 'When?', mode, backend, date(2026, 10, 23))
 
+    def graph_request(self, ident='graph-one', backend='chroma', mode='draft_review'):
+        return replace(self.request(ident, backend, mode), workflow='langgraph_semantic')
+
     def test_projection_excludes_diagnostics_and_keeps_citation_status(self):
         view = self.ui.project_result(success(), 'approved_only')
         self.assertEqual(view.citations, ('HR-001 v0.1 §4.2 (approved, synthetic)',))
@@ -145,6 +148,147 @@ class UIRuntimeTests(unittest.TestCase):
         self.assertIs(owner._opener, self.opener)
         owner.submit(self.request(), consent=True)
         self.assertEqual(len(self.opened), 1)
+
+    def test_workflow_defaults_to_standard_and_rejects_unknown_values(self):
+        from dataclasses import replace
+        standard = self.request()
+        self.assertEqual(standard.workflow, 'standard')
+        self.assertTrue(standard.valid())
+        self.assertFalse(replace(standard, workflow='untrusted-profile').valid())
+
+    def test_graph_workflow_is_disabled_without_budget_ready_opener(self):
+        owner = self.owner()
+        view = owner.submit(self.graph_request(), consent=True)
+        self.assertEqual(view.code, 'workflow_disabled')
+        self.assertFalse(self.opened)
+        self.assertEqual(owner.attempts, 0)
+
+    def test_graph_workflow_preserves_current_pinecone_factory_restriction(self):
+        opened = []
+
+        @contextmanager
+        def graph_opener(root, **kwargs):
+            opened.append(kwargs)
+            yield FakeService()
+
+        owner = self.ui.ResourceOwner(self.root, live_enabled=True, pinecone_enabled=True,
+                                      graph_enabled=True, graph_opener=graph_opener)
+        self.addCleanup(owner.close)
+        view = owner.submit(self.graph_request(backend='pinecone'), consent=True)
+        self.assertEqual(view.code, 'workflow_backend_unsupported')
+        self.assertFalse(opened)
+        self.assertEqual(owner.attempts, 0)
+
+    def test_fake_graph_service_uses_semantic_profile_and_reuses_resources(self):
+        graph_result = structured_success(status=DRAFT)
+        graph_service = FakeService(graph_result)
+        opened, closed = [], []
+
+        @contextmanager
+        def graph_opener(root, **kwargs):
+            opened.append((root, kwargs))
+            try:
+                yield graph_service
+            finally:
+                closed.append(kwargs['backend'])
+
+        owner = self.ui.ResourceOwner(self.root, live_enabled=True, graph_enabled=True,
+                                      graph_opener=graph_opener)
+        self.addCleanup(owner.close)
+        first = owner.submit(self.graph_request(), consent=True)
+        second = owner.submit(self.graph_request('graph-two'), consent=True)
+        self.assertEqual(first.kind, 'answer')
+        self.assertTrue(first.proposed)
+        self.assertEqual(first.presentation, graph_result.public.presentation)
+        self.assertIn('(proposed)', first.citations[0])
+        self.assertEqual(second.kind, 'answer')
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0][1]['profile'], 'llm_routing_grading_semantic_v1')
+        self.assertEqual(opened[0][0], self.root)
+        self.assertEqual(len(graph_service.calls), 2)
+        self.assertEqual(graph_service.calls[0][1]['mode'], 'draft_review')
+        owner.close()
+        self.assertEqual(closed, ['chroma'])
+
+    def test_existing_phase_b_graph_runs_through_ui_owner_with_fake_provider(self):
+        from test_orchestration_semantic import PhaseBSemanticGraphTests
+
+        fixture = PhaseBSemanticGraphTests()
+        fixture.setUp()
+        service, _, _, provider = fixture.make()
+
+        @contextmanager
+        def graph_opener(root, **kwargs):
+            self.assertEqual(kwargs['profile'], 'llm_routing_grading_semantic_v1')
+            yield service
+
+        owner = self.ui.ResourceOwner(self.root, live_enabled=True, graph_enabled=True,
+                                      graph_opener=graph_opener)
+        self.addCleanup(owner.close)
+        request = replace(self.graph_request('actual-graph', mode='draft_review'), question='Who?')
+        view = owner.submit(request, consent=True)
+        self.assertEqual(view.kind, 'answer')
+        self.assertTrue(view.proposed)
+        self.assertEqual([call.purpose for call in service.last_trace.calls],
+                         ['router', 'grader', 'generator', 'semantic_checker'])
+        self.assertEqual(len(provider.calls), 4)
+
+    def test_workflow_switch_closes_graph_and_standard_resources(self):
+        graph_service = FakeService()
+        opened, closed = [], []
+
+        @contextmanager
+        def graph_opener(root, **kwargs):
+            opened.append(('graph', kwargs))
+            try:
+                yield graph_service
+            finally:
+                closed.append('graph')
+
+        owner = self.ui.ResourceOwner(self.root, live_enabled=True, graph_enabled=True,
+                                      graph_opener=graph_opener, opener=self.opener)
+        self.addCleanup(owner.close)
+        owner.submit(self.graph_request(), consent=True)
+        owner.submit(self.request('linear-after-graph'), consent=True)
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(closed, ['graph'])
+        self.assertEqual(len(self.service.calls), 1)
+
+    def test_duplicate_graph_submission_does_not_execute_twice(self):
+        graph_service = FakeService()
+        opened = []
+
+        @contextmanager
+        def graph_opener(root, **kwargs):
+            opened.append(kwargs)
+            yield graph_service
+
+        owner = self.ui.ResourceOwner(self.root, live_enabled=True, graph_enabled=True,
+                                      graph_opener=graph_opener)
+        self.addCleanup(owner.close)
+        request = self.graph_request()
+        owner.submit(request, consent=True)
+        self.assertEqual(owner.submit(request, consent=True).code, 'duplicate')
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(len(graph_service.calls), 1)
+
+    def test_graph_rejected_result_uses_the_same_safe_error_projection(self):
+        rejected = QAFailure(PublicError('response_rejected', 'SECRET_GRAPH_CANDIDATE'),
+                             success().diagnostics)
+        graph_service = FakeService(rejected)
+
+        @contextmanager
+        def graph_opener(root, **kwargs):
+            yield graph_service
+
+        owner = self.ui.ResourceOwner(self.root, live_enabled=True, graph_enabled=True,
+                                      graph_opener=graph_opener)
+        self.addCleanup(owner.close)
+        view = owner.submit(self.graph_request(), consent=True)
+        self.assertEqual(view.kind, 'error')
+        self.assertEqual(view.code, 'response_rejected')
+        self.assertNotIn('SECRET_GRAPH_CANDIDATE', str(asdict(view)))
+        self.assertFalse(view.citations)
 
     def test_service_reused_fixed_configuration_and_no_reviewed_obligations(self):
         owner = self.owner()
@@ -227,6 +371,31 @@ class UIRuntimeTests(unittest.TestCase):
         conversation.run_pending(owner, consent=True)
         self.assertEqual(conversation.history[0].view.code, 'interrupted')
         self.assertFalse(self.service.calls)
+
+    def test_conversation_preserves_submitted_workflow(self):
+        owner = self.owner()
+        request = self.request()
+        conversation = self.ui.Conversation()
+        self.assertTrue(conversation.queue(replace(request, workflow='langgraph_semantic')))
+        conversation.run_pending(owner, consent=True)
+        self.assertEqual(conversation.history[0].submission.workflow, 'langgraph_semantic')
+        self.assertEqual(conversation.history[0].view.code, 'workflow_disabled')
+        self.assertFalse(self.service.calls)
+
+    def test_conversation_histories_and_workflow_choices_are_session_local(self):
+        owner = self.owner()
+        first, second = self.ui.Conversation(), self.ui.Conversation()
+        self.assertTrue(first.queue(self.request('standard-session')))
+        self.assertTrue(second.queue(self.graph_request('graph-session')))
+        first.run_pending(owner, consent=True)
+        second.run_pending(owner, consent=True)
+        self.assertEqual(first.history[0].submission.workflow, 'standard')
+        self.assertEqual(second.history[0].submission.workflow, 'langgraph_semantic')
+        self.assertEqual(len(first.history), 1)
+        self.assertEqual(len(second.history), 1)
+        first.clear()
+        self.assertFalse(first.history)
+        self.assertEqual(len(second.history), 1)
 
     def test_invalid_input_rejected_without_initialization(self):
         from dataclasses import replace

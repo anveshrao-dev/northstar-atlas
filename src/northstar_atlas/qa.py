@@ -226,7 +226,7 @@ class QAService:
     """
     def __init__(self, store: RetrievalStore, embedder: EmbeddingProvider | None, provider: LLMProvider, *,
                  corpus_fingerprint: str, backend: str = "custom", model: str = MODEL_ID,
-                 strategy: str = "dense"):
+                 strategy: str = "dense", budget=None):
         try:
             QwenTokenBound(model)
             if (backend not in ("chroma", "pinecone", "custom") or strategy not in ("dense", "bm25", "hybrid") or
@@ -239,13 +239,27 @@ class QAService:
         self._store, self._embedder, self._provider = store, embedder, provider
         self._fingerprint, self._backend, self._model = corpus_fingerprint, backend, model
         self._strategy = strategy
+        self._budget = budget
 
     def ask(self, question: str, *, mode: RetrievalMode = "approved_only", top_k: int = 5,
             reference_date: date | None = None, limits: GenerationLimits = GenerationLimits(),
             obligations: tuple[EvidenceObligation, ...] = (),
             abstention: AbstentionRequirements | None = None,
-            extractive_scope: ReviewedExtractiveScope | None = None) -> QASuccess | QAFailure:
+            extractive_scope: ReviewedExtractiveScope | None = None,
+            reservation=None, invocation_id: str | None = None) -> QASuccess | QAFailure:
         started = perf_counter()
+        as_of = reference_date if reference_date is not None else datetime.now(timezone.utc).date()
+        if self._budget is not None and reservation is None:
+            from .live_budget import WorkflowRequest, LINEAR, BudgetError
+            try:
+                with self._budget.reserve(WorkflowRequest(invocation_id, LINEAR, question, mode, self._backend, as_of)) as permit:
+                    result = self.ask(question, mode=mode, top_k=top_k, reference_date=as_of, limits=limits,
+                                      obligations=obligations, abstention=abstention,
+                                      extractive_scope=extractive_scope, reservation=permit)
+                return result
+            except (BudgetError, OSError):
+                return QAFailure(PublicError('configuration_failed', _MESSAGES['configuration_failed']),
+                                 QADiagnostics('configuration', self._backend, None, None, self._fingerprint, self._model))
         observed = _ObservedProvider(self._provider)
         diagnostics = QADiagnostics("input", self._backend, None, None, self._fingerprint, self._model,
                                     retrieval_strategy=self._strategy)
@@ -262,6 +276,20 @@ class QAService:
             return failure("invalid_input", "input")
         as_of = reference_date if reference_date is not None else datetime.now(timezone.utc).date()
         diagnostics = replace(diagnostics, mode=mode, reference_date=as_of)
+
+        if reservation is not None:
+            from .live_budget import WorkflowReservation, StageProvider, LINEAR
+            try:
+                if not isinstance(reservation, WorkflowReservation):
+                    raise ValueError
+                if self._budget is not None:
+                    reservation.check_coordinator(self._budget)
+                reservation.check_request(profile=LINEAR, question=question, mode=mode,
+                                          backend=self._backend, reference_date=as_of)
+                observed = _ObservedProvider(StageProvider(reservation, self._provider), max_calls=1)
+            except ValueError:
+                return failure('configuration_failed', 'configuration')
+
         try:
             hits = self._store.search(question, self._embedder, corpus_fingerprint=self._fingerprint,
                                       mode=mode, top_k=top_k, reference_date=as_of)
@@ -338,7 +366,7 @@ def open_retriever(root: Path, backend: str, *, strategy: str = "dense", snapsho
 @contextmanager
 def open_qa_service(root: Path, *, backend: str | None = None, provider: LLMProvider | None = None,
                     allow_paid: bool = False, model: str = MODEL_ID, strategy: str = "dense",
-                    snapshot_id: str | None = None) -> Iterator[QAService]:
+                    snapshot_id: str | None = None, budget=None, reservation=None) -> Iterator[QAService]:
     """Open reusable configured adapters; injected providers remain caller-owned.
 
     No inference occurs during setup. Configured Nebius requires explicit paid
@@ -353,6 +381,14 @@ def open_qa_service(root: Path, *, backend: str | None = None, provider: LLMProv
         if selected not in ("chroma", "pinecone") or strategy not in ("dense", "bm25", "hybrid"):
             raise QAConfigurationError()
         QwenTokenBound(model)
+        if budget is None and os.environ.get('NORTHSTAR_CONTROLLED_LIVE') == '1':
+            from .live_budget import configured_budget
+            budget = configured_budget(root)
+        if budget is not None:
+            if reservation is None:
+                budget.check_ready()
+            else:
+                reservation.check_coordinator(budget)
         if provider is not None and not callable(getattr(provider, "generate", None)):
             raise QAConfigurationError()
         if provider is None:
@@ -362,11 +398,12 @@ def open_qa_service(root: Path, *, backend: str | None = None, provider: LLMProv
             settings = load_settings(root)
             if settings.model != model:
                 raise QAConfigurationError()
-            provider = resources.enter_context(NebiusProvider(settings, allow_paid=True, max_attempts=1))
+            options = {'requires_budget': True} if budget is not None else {}
+            provider = resources.enter_context(NebiusProvider(settings, allow_paid=True, max_attempts=1, **options))
         options = {} if strategy == "dense" else {"strategy": strategy, "snapshot_id": snapshot_id}
         store, embedder, fingerprint = resources.enter_context(open_retriever(root, selected, **options))
         service = QAService(store, embedder, provider, corpus_fingerprint=fingerprint, backend=selected,
-                            model=model, strategy=strategy)
+                            model=model, strategy=strategy, budget=budget)
     except Exception:
         try:
             resources.close()

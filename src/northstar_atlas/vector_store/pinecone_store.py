@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from northstar_atlas.embeddings import EmbeddingProvider, embed_query
 from northstar_atlas.ingestion.document_loader import APPROVED, DRAFT, RetrievalMode
-from .contracts import SearchHit
+from .contracts import SearchHit, validate_department_scope
 from .pinecone_state import PublicationState
 from .preparation import FrozenSnapshot, STORAGE_SCHEMA_VERSION, float32_vector, freeze_snapshot
 from .records import VectorStoreError, canonical_json, context_ids, decode_chunk, digest, metadata_for
@@ -350,7 +350,9 @@ class PineconeStore:
 
     def search(self, query: str, provider: EmbeddingProvider, *, corpus_fingerprint: str,
                mode: RetrievalMode = "approved_only", top_k: int = 5,
-               reference_date: date | None = None) -> tuple[SearchHit, ...]:
+               reference_date: date | None = None,
+               department_scope: tuple[str, ...] | None = None) -> tuple[SearchHit, ...]:
+        scope = validate_department_scope(department_scope)
         if not isinstance(query, str) or not query.strip(): raise VectorStoreError("query must be nonempty")
         if mode not in ("approved_only", "draft_review"): raise VectorStoreError("invalid retrieval mode")
         if type(top_k) is not int or not 1 <= top_k <= 10_000: raise VectorStoreError("invalid top_k")
@@ -369,6 +371,8 @@ class PineconeStore:
                            [{"status": {"$in": [APPROVED, DRAFT]}}])
             filter = {"$and": [{"snapshot_id": {"$eq": self.snapshot.snapshot_id}},
                                {"config_digest": {"$eq": digest(self.config.serialized)}}, *eligibility]}
+            if scope is not None:
+                filter['$and'].append({'department': {'$in': list(scope)}})
             with self._search_integrity():
                 matches = self._dense_search(vector, top_k, filter)
                 hits, seen = [], set()
@@ -382,6 +386,8 @@ class PineconeStore:
                     if chunk.chunk_id in seen: raise VectorStoreError("duplicate search hit")
                     seen.add(chunk.chunk_id)
                     if not self._eligible(chunk, mode, as_of): raise VectorStoreError("ineligible authority metadata")
+                    if scope is not None and chunk.department not in scope:
+                        raise VectorStoreError('out-of-scope direct evidence')
                     siblings = self._fetch(set(context_ids(chunk)), siblings=True)
                     if any(not self._eligible(c, mode, as_of) for c in siblings.values()):
                         raise VectorStoreError("ineligible required sibling context")

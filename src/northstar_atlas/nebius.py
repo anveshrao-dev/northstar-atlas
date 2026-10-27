@@ -108,11 +108,14 @@ class NebiusProvider:
     def __init__(self, settings: NebiusSettings, *, allow_paid: bool = False,
                  timeout_seconds: float = 30, max_attempts: int = 1,
                  transport: httpx.BaseTransport | None = None,
-                 sleep: Callable[[float], None] = time.sleep):
+                 sleep: Callable[[float], None] = time.sleep, requires_budget: bool = False):
         if type(max_attempts) is not int or not 1 <= max_attempts <= 2:
             raise ProviderError("max_attempts must be one or two")
         if not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 120:
             raise ProviderError("timeout must be between zero and 120 seconds")
+        self._requires_budget = requires_budget or os.environ.get('NORTHSTAR_CONTROLLED_LIVE') == '1'
+        if self._requires_budget and max_attempts != 1:
+            raise ProviderError('controlled inference requires one transport attempt')
         self._settings = settings
         self._allow_paid = allow_paid
         self._attempts = max_attempts
@@ -175,6 +178,21 @@ class NebiusProvider:
                 "http_calls": attempts, "latency_seconds": round(elapsed, 3)}
 
     def generate(self, request: GenerationRequest) -> GenerationResponse:
+        if self._requires_budget:
+            raise ProviderError('controlled inference requires an active workflow reservation')
+        return self._generate(request)
+
+    def generate_budgeted(self, request: GenerationRequest, reservation) -> GenerationResponse:
+        from .live_budget import BudgetError, WorkflowReservation
+        try:
+            if not isinstance(reservation, WorkflowReservation) or self._attempts != 1:
+                raise BudgetError('invalid permit')
+            reservation.claim_transport(request)
+        except BudgetError:
+            raise ProviderError('workflow reservation is absent or invalid') from None
+        return self._generate(request)
+
+    def _generate(self, request: GenerationRequest) -> GenerationResponse:
         if not self._allow_paid:
             raise ProviderError("paid inference is disabled; separate approval and explicit opt-in are required")
         if request.model != self._settings.model:

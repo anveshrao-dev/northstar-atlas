@@ -17,7 +17,7 @@ from northstar_atlas.embeddings import EmbeddedChunk, EmbeddingModel, EmbeddingP
 from northstar_atlas.ingestion.chunker import PolicyChunk
 from northstar_atlas.ingestion.document_loader import APPROVED, DRAFT, RetrievalMode
 from .records import IndexConfig, VectorStoreError, canonical_json, context_ids, decode_chunk, digest, metadata_for, validate_context
-from .contracts import SearchHit  # Compatibility export for existing callers.
+from .contracts import SearchHit, validate_department_scope  # Compatibility export for existing callers.
 
 
 COLLECTION_NAME = "northstar_atlas_policies_v1"
@@ -256,7 +256,9 @@ class ChromaStore:
 
     def search(self, query: str, provider: EmbeddingProvider, *, corpus_fingerprint: str,
                mode: RetrievalMode = "approved_only", top_k: int = 5,
-               reference_date: date | None = None) -> tuple[SearchHit, ...]:
+               reference_date: date | None = None,
+               department_scope: tuple[str, ...] | None = None) -> tuple[SearchHit, ...]:
+        scope = validate_department_scope(department_scope)
         if not isinstance(query, str) or not query.strip():
             raise VectorStoreError("query must be a nonempty string")
         if mode not in ("approved_only", "draft_review") or type(top_k) is not int or not 1 <= top_k <= 100:
@@ -276,7 +278,8 @@ class ChromaStore:
             if state.get("corpus_fingerprint") != corpus_fingerprint:
                 raise VectorStoreError("stale index: corpus changed; rerun index")
             eligible = {key: c for key, c in chunks.items() if _eligible(c, mode, as_of)}
-            if not eligible:
+            candidates = {key: c for key, c in eligible.items() if scope is None or c.department in scope}
+            if not candidates:
                 return ()
             query_vector = embed_query(query, provider)
             if query_vector.model != self.config.model:
@@ -284,11 +287,13 @@ class ChromaStore:
             where = ({"$and": [{"status": APPROVED}, {"effective_ordinal": {"$gt": 0}},
                        {"effective_ordinal": {"$lte": as_of.toordinal()}}]} if mode == "approved_only"
                      else {"status": {"$in": [APPROVED, DRAFT]}})
+            if scope is not None:
+                where = {'$and': [where, {'department': {'$in': list(scope)}}]}
             result = collection.query(query_embeddings=[list(query_vector.vector)],
-                                      n_results=min(top_k, len(eligible)), where=where, include=["distances"])
+                                      n_results=min(top_k, len(candidates)), where=where, include=["distances"])
             hits = []
             for key, distance in zip(result["ids"][0], result["distances"][0], strict=True):
-                if key not in eligible or not math.isfinite(distance):
+                if key not in candidates or not math.isfinite(distance):
                     raise VectorStoreError("invalid or ineligible search result")
                 chunk = eligible[key]
                 siblings = []

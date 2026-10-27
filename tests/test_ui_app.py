@@ -44,6 +44,25 @@ class AppTests(unittest.TestCase):
         self.assertEqual(app.selectbox(key='mode').value, 'approved_only')
         self.assertEqual(app.selectbox(key='backend').value, 'chroma')
         self.assertFalse(app.checkbox(key='paid_opt_in').value)
+        self.assertNotIn('workflow', [widget.key for widget in app.selectbox])
+
+    def test_graph_operator_gate_enables_only_chroma_selection_without_opening_resources(self):
+        with patch.dict(os.environ, NORTHSTAR_UI_ENABLE_LIVE='1', NORTHSTAR_UI_ENABLE_GRAPH='1',
+                        NORTHSTAR_CONTROLLED_LIVE='1', NORTHSTAR_PRIVATE_PREVIEW_CONFIRMED='1',
+                        NORTHSTAR_UI_ENABLE_PINECONE='1'):
+            app = self.app()
+            app.radio(key='experience').set_value('Live Q&A').run()
+            self.assertEqual(app.selectbox(key='workflow').value, 'standard')
+            app.selectbox(key='workflow').set_value('langgraph_semantic').run()
+            app.checkbox(key='paid_opt_in').check().run()
+            self.assertFalse(app.chat_input[0].disabled)
+            self.assertTrue(any('full durable workflow reservation' in x.value for x in app.caption))
+            app.selectbox(key='backend').set_value('pinecone').run()
+            self.assertTrue(app.chat_input[0].disabled)
+            app.radio(key='experience').set_value('Offline demo').run()
+            app.button(key='run_demo').click().run()
+            self.assertTrue(app.session_state['conversation'].history[-1].submission.demo)
+            self.assertFalse(app.exception)
 
     def test_demo_hr_citation_and_rerun_no_duplicate_history(self):
         app = self.app()
@@ -79,9 +98,24 @@ class AppTests(unittest.TestCase):
     def test_live_input_disabled_without_server_gate(self):
         app = self.app()
         app.radio(key='experience').set_value('Live Q&A').run()
+        self.assertEqual(app.selectbox(key='workflow').value, 'standard')
         self.assertTrue(app.chat_input[0].disabled)
         self.assertTrue(app.checkbox(key='paid_opt_in').disabled)
         self.assertFalse(app.session_state['conversation'].history)
+
+    def test_graph_workflow_is_selectable_but_live_submission_stays_disabled(self):
+        with patch.dict(os.environ, NORTHSTAR_UI_ENABLE_LIVE='1'):
+            app = self.app()
+            app.radio(key='experience').set_value('Live Q&A').run()
+            self.assertEqual(app.selectbox(key='workflow').value, 'standard')
+            app.checkbox(key='paid_opt_in').check().run()
+            self.assertFalse(app.chat_input[0].disabled)
+            app.selectbox(key='workflow').set_value('langgraph_semantic').run()
+            self.assertTrue(any('disabled' in warning.value.lower() and 'budget coordinator' in warning.value.lower()
+                                for warning in app.warning))
+            self.assertTrue(app.chat_input[0].disabled)
+            self.assertEqual(self.open_mock.call_count, 0)
+            self.assertFalse(app.session_state['conversation'].history)
 
     def test_enabled_live_ui_uses_fake_service_once_and_renders_inert_text(self):
         from test_ui import FakeService, success
