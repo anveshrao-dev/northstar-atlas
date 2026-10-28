@@ -9,7 +9,7 @@ import json
 import os
 import re
 
-from .live_budget import GRAPH, _fields, _require, _unique
+from .live_budget import GRAPH, LINEAR, _fields, _require, _unique
 from .llm import MODEL_ID
 from .project import contained_path
 
@@ -29,27 +29,35 @@ def identity(path):
     return [info.st_dev, info.st_ino]
 
 
-def validate_contract(value):
+def validate_contract(value, *, profile=GRAPH):
+    _require(profile in (GRAPH, LINEAR))
     _fields(value, 'invocation_id question_sha256 mode backend profile reference_date model corpus_sha256')
     _require(isinstance(value['invocation_id'], str)
              and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value['invocation_id'])
              and value['mode'] in ('approved_only', 'draft_review')
-             and value['backend'] == 'chroma' and value['profile'] == GRAPH
+             and value['backend'] == ('chroma' if profile == GRAPH else 'pinecone')
+             and value['profile'] == profile
              and value['model'] == MODEL_ID)
     digest(value['question_sha256']); digest(value['corpus_sha256'])
     _require(date.fromisoformat(value['reference_date']).isoformat() == value['reference_date'])
 
 
 def validate_plan(budget, plan):
-    _fields(plan, 'version kind authority directory_identity lock_identity ledger_identity '
-            'source_sha256 candidate_sha256 scope billing_scope model old_cap new_cap cost_cap '
-            'pricing_sha256 request')
-    _require(type(plan['version']) is int and plan['version'] == 1
-             and plan['kind'] == 'v2-diagnostic-amendment'
+    linear = isinstance(plan, dict) and plan.get('kind') == 'v2-linear-demo-amendment'
+    fields = 'version kind authority directory_identity lock_identity ledger_identity '
+    fields += ('source_sha256 candidate_sha256 scope billing_scope model old_cap new_cap cost_cap '
+               'pricing_sha256 request')
+    if linear:
+        fields += ' previous_window_sha256'
+        digest(plan.get('previous_window_sha256'))
+    _fields(plan, fields)
+    _require(type(plan['version']) is int and plan['version'] == (2 if linear else 1)
+             and plan['kind'] == ('v2-linear-demo-amendment' if linear else 'v2-diagnostic-amendment')
              and plan['authority'] == str(budget.authority_root)
              and plan['scope'] == budget.scope and plan['billing_scope'] == budget.billing_scope
-             and plan['model'] == MODEL_ID and type(plan['old_cap']) is int and plan['old_cap'] == 8
-             and type(plan['new_cap']) is int and plan['new_cap'] == 15
+             and plan['model'] == MODEL_ID and type(plan['old_cap']) is int
+             and plan['old_cap'] == (15 if linear else 8)
+             and type(plan['new_cap']) is int and plan['new_cap'] == (16 if linear else 15)
              and plan['cost_cap'] == '0.100000')
     for key in ('source_sha256', 'candidate_sha256', 'pricing_sha256'): digest(plan[key])
     for key in ('directory_identity', 'lock_identity', 'ledger_identity'):
@@ -58,7 +66,7 @@ def validate_plan(budget, plan):
                  and all(type(n) is int and n >= 0 for n in pair))
     _require(plan['directory_identity'] == identity(budget.directory)
              and plan['lock_identity'] == identity(budget.lock_path))
-    validate_contract(plan['request'])
+    validate_contract(plan['request'], profile=LINEAR if linear else GRAPH)
 
 
 def read_private(budget, path, *, root, limit):
@@ -79,7 +87,7 @@ def read_window(budget, approval):
     plan = json.loads(raw, object_pairs_hook=_unique,
                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
     validate_plan(budget, plan)
-    _require(budget.policy.max_attempts == 15)
+    _require(budget.policy.max_attempts == plan['new_cap'])
     return plan
 
 
