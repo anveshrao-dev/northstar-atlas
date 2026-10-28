@@ -37,10 +37,93 @@ class NebiusTests(unittest.TestCase):
         with self.provider(send,allow_paid=True) as p: result=p.generate(self.request)
         body=json.loads(requests[0].content)
         self.assertEqual(str(requests[0].url),"https://api.tokenfactory.nebius.com/v1/chat/completions")
-        self.assertEqual(body["max_tokens"],1024)
-        self.assertEqual(body["response_format"]["type"],"json_schema")
-        self.assertFalse(body["stream"]); self.assertFalse(body["store"])
+        self.assertEqual(len(requests),1)
+        self.assertEqual(body, {
+            "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+            "messages": [{"role": "system", "content": "system"},
+                         {"role": "user", "content": "user"}],
+            "temperature": 0, "max_tokens": 1024, "n": 1,
+            "stream": False, "store": False,
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "grounded_answer", "strict": True, "schema": {}}},
+        })
         self.assertEqual(result.usage.total_tokens,50)
+
+    def test_router_serializes_compatible_schema_without_relaxing_other_constraints(self):
+        from northstar_atlas.orchestration_assessment import prepare_route
+        request = prepare_route("Who approves production access?")
+        requests = []
+        def send(r):
+            requests.append(r)
+            return self.response(r)
+        with self.provider(send, allow_paid=True, max_attempts=1) as p:
+            p.generate(request)
+        self.assertEqual(len(requests), 1)
+        body = json.loads(requests[0].content)
+        schema = body["response_format"]["json_schema"]["schema"]
+        self.assertNotIn("uniqueItems", json.dumps(schema))
+        self.assertEqual(schema, {
+            "type": "object",
+            "properties": {
+                "schema_version": {"type": "string", "enum": ["routing-v1"]},
+                "route": {"type": "string", "enum": ["categories", "general"]},
+                "categories": {"type": "array", "items": {
+                    "type": "string", "enum": ["human_resources", "it_operations",
+                        "platform_engineering", "site_reliability",
+                        "information_security", "compliance"]},
+                    "minItems": 0, "maxItems": 6},
+            },
+            "required": ["schema_version", "route", "categories"],
+            "additionalProperties": False,
+        })
+        self.assertEqual(body, {
+            "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+            "messages": [{"role": "system", "content": request.system},
+                         {"role": "user", "content": request.user}],
+            "temperature": 0, "max_tokens": 256, "n": 1,
+            "stream": False, "store": False,
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "grounded_answer", "strict": True, "schema": schema}},
+        })
+
+    def test_router_http_failures_are_sanitized_and_never_retried(self):
+        from northstar_atlas.orchestration_assessment import prepare_route
+        from northstar_atlas.provider_diagnostics import FailureCategory, observe_transport
+        request = prepare_route("Who approves production access?")
+        for status in (400, 401, 429, 503):
+            with self.subTest(status=status):
+                requests = []
+                def send(r):
+                    requests.append(r)
+                    return httpx.Response(status, json={"error": self.key}, request=r)
+                with observe_transport() as observation, self.provider(
+                        send, allow_paid=True, max_attempts=1,
+                        sleep=lambda _: self.fail("unexpected retry")) as p:
+                    with self.assertRaises(self.n.ProviderError) as error:
+                        p.generate(request)
+                self.assertEqual(len(requests), 1)
+                self.assertEqual(error.exception.category, FailureCategory.HTTP)
+                self.assertTrue(observation.attempted)
+                self.assertEqual(observation.http_status, status)
+                self.assertNotIn(self.key, str(error.exception))
+
+    def test_router_still_rejects_invalid_categories_after_http_success(self):
+        from northstar_atlas.orchestration_assessment import prepare_route, parse_route
+        from northstar_atlas.generation import GenerationError
+        request = prepare_route("Who approves production access?")
+        for route, categories in (("categories", ["compliance", "compliance"]),
+                                  ("categories", ["unknown"]), ("categories", []),
+                                  ("general", ["compliance"])):
+            with self.subTest(route=route, categories=categories):
+                content = json.dumps({"schema_version": "routing-v1",
+                                      "route": route, "categories": categories})
+                def send(r):
+                    return self.response(r, choices=[{"message": {
+                        "role": "assistant", "content": content}, "finish_reason": "stop"}])
+                with self.provider(send, allow_paid=True, max_attempts=1) as p:
+                    response = p.generate(request)
+                with self.assertRaises(GenerationError):
+                    parse_route(response.text)
 
     def test_model_list_preflight_never_posts(self):
         def send(r):
