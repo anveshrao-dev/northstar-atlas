@@ -272,7 +272,7 @@ class PersistentBudget:
                  and (info.st_dev, info.st_ino) == (current.st_dev, current.st_ino))
 
     @contextmanager
-    def _locked(self):
+    def _locked(self, *, diagnostic_approval=None):
         try:
             self._paths()
             fd = os.open(self.lock_path, os.O_RDWR | os.O_NOFOLLOW)
@@ -287,7 +287,15 @@ class PersistentBudget:
                 self._paths()
                 self._opened_file(lock.fileno(), self.lock_path)
                 _require(not self._blocked and not os.path.lexists(self.pending_path))
-                yield
+                window = self.directory / 'diagnostic-window.json'
+                plan = None
+                if os.path.lexists(window) or diagnostic_approval is not None:
+                    from .diagnostic_window import read_window
+                    try:
+                        plan = read_window(self, diagnostic_approval)
+                    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+                        raise BudgetError('diagnostic window unavailable or unauthorized; inference denied') from None
+                yield plan
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
@@ -319,8 +327,12 @@ class PersistentBudget:
                 counts, cost = _legacy(value)
                 _require(not current)  # Read-only compatibility; never silently migrate.
                 return value, {}, BudgetState(1, counts, cost)
-            _fields(value, 'version scope billing_scope provider model max_attempts max_reserved_usd legacy '
-                           'pricing_revisions active_pricing workflows')
+            fields = 'version scope billing_scope provider model max_attempts max_reserved_usd legacy pricing_revisions active_pricing workflows'
+            if isinstance(value, dict) and 'diagnostic_request_sha256' in value:
+                fields += ' diagnostic_request_sha256'
+                _require(isinstance(value['diagnostic_request_sha256'], str)
+                         and re.fullmatch('[0-9a-f]{64}', value['diagnostic_request_sha256']))
+            _fields(value, fields)
             _require(type(value['version']) is int and value['version'] == 2
                      and isinstance(self.scope, str) and re.fullmatch('[0-9a-f]{32}', self.scope)
                      and isinstance(self.billing_scope, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', self.billing_scope)
@@ -481,13 +493,14 @@ class PersistentBudget:
                     pass  # Storage has failed; this process stays blocked.
             raise BudgetError('settlement is uncertain; reviewed recovery is required') from None
 
-    def inspect_history(self):
-        with self._locked():
+    def inspect_history(self, *, diagnostic_approval=None):
+        with self._locked(diagnostic_approval=diagnostic_approval):
             return self._read(current=False)[2]
 
     def check_ready(self, *, profile=None):
         with self._locked():
             value, prices, state = self._read()
+            _require('diagnostic_request_sha256' not in value)
             _require(state.attempts_consumed < self.policy.max_attempts and state.reserved_usd < self.policy.max_reserved_usd)
             if profile is not None:
                 _require(profile in _SLOTS)
@@ -499,13 +512,19 @@ class PersistentBudget:
             return state
 
     @contextmanager
-    def reserve(self, request: WorkflowRequest):
+    def reserve(self, request: WorkflowRequest, *, diagnostic_approval=None):
         _require(isinstance(request, WorkflowRequest))
         validate_project_root(self.root)  # Manifest and source hashes are checked again.
-        corpus = hashlib.sha256(contained_path(self.root, 'data/corpus_manifest.json').read_bytes()).hexdigest()
-        with self._locked():
+        with self._locked(diagnostic_approval=diagnostic_approval) as diagnostic_plan:
+            validate_project_root(self.root)
+            corpus = hashlib.sha256(contained_path(self.root, 'data/corpus_manifest.json').read_bytes()).hexdigest()
             value, prices, state = self._read()
             _require(all(f['id'] != request.invocation_id for f in value['workflows']))
+            # Removing the private window must never reopen ordinary spending.
+            _require('diagnostic_request_sha256' not in value or diagnostic_plan is not None)
+            if diagnostic_plan is not None:
+                from .diagnostic_window import check_request
+                check_request(self, diagnostic_plan, request, corpus, value)
             price = prices[value['active_pricing']]
             slots = _SLOTS[request.profile]
             cost = sum((_estimate(price, s[2], s[3]) for s in slots), Decimal(0))
