@@ -16,12 +16,32 @@ import httpx
 
 from northstar_atlas.llm import (GenerationRequest, GenerationResponse, MODEL_ID,
                                  QwenTokenBound, TokenUsage)
+from northstar_atlas.provider_diagnostics import (ClassifiedProviderError, FailureCategory,
+                                                 transport_observation)
 
 ENDPOINT = "https://api.tokenfactory.nebius.com/v1"
 
 
-class ProviderError(ValueError):
+class ProviderError(ClassifiedProviderError):
     """Allowlisted messages only; no raw remote body, request or credential."""
+
+
+class _ObservedTransport(httpx.BaseTransport):
+    """Observe dispatch, not permit consumption; never retain the HTTP request."""
+    def __init__(self, transport: httpx.BaseTransport):
+        self._transport = transport
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        observation = transport_observation()
+        if observation is not None:
+            observation.attempted = True
+        response = self._transport.handle_request(request)
+        if observation is not None:
+            observation.http_status = response.status_code
+        return response
+
+    def close(self):
+        self._transport.close()
 
 
 def _reject_secret(value: object, secret: str, depth: int = 0) -> None:
@@ -120,8 +140,9 @@ class NebiusProvider:
         self._allow_paid = allow_paid
         self._attempts = max_attempts
         self._sleep = sleep
+        observed = _ObservedTransport(transport if transport is not None else httpx.HTTPTransport(trust_env=False))
         self._client = httpx.Client(timeout=httpx.Timeout(timeout_seconds, connect=min(timeout_seconds, 5)),
-                                    transport=transport, follow_redirects=False, trust_env=False)
+                                    transport=observed, follow_redirects=False, trust_env=False)
 
     def __enter__(self): return self
 
@@ -135,9 +156,14 @@ class NebiusProvider:
                 response = self._client.request(method, self._settings.endpoint.rstrip("/") + path,
                     headers={"Authorization": "Bearer " + self._settings.api_key}, json=payload)
             except httpx.TimeoutException:
-                raise ProviderError("provider timeout; no automatic retry, usage may be unknown") from None
+                raise ProviderError("provider timeout; no automatic retry, usage may be unknown",
+                                    category=FailureCategory.TIMEOUT) from None
+            except httpx.ConnectError:
+                raise ProviderError("provider transport failure; no automatic retry",
+                                    category=FailureCategory.CONNECTION) from None
             except httpx.HTTPError:
-                raise ProviderError("provider transport failure; no automatic retry") from None
+                raise ProviderError("provider transport failure; no automatic retry",
+                                    category=FailureCategory.TRANSPORT) from None
             if response.status_code in (429, 502, 503, 504) and attempt < attempts:
                 delay = 1.0
                 retry_after = response.headers.get("Retry-After")
@@ -153,7 +179,8 @@ class NebiusProvider:
                 self._sleep(max(0, delay))
                 continue
             if response.status_code != 200:
-                raise ProviderError(f"provider returned HTTP {response.status_code}; response body suppressed")
+                raise ProviderError(f"provider returned HTTP {response.status_code}; response body suppressed",
+                                    category=FailureCategory.HTTP)
             try:
                 if len(response.content) > 2_000_000 or self._settings.api_key in response.text:
                     raise ValueError
@@ -161,7 +188,7 @@ class NebiusProvider:
                 if not isinstance(value, dict): raise ValueError
                 _reject_secret(value, self._settings.api_key)
             except (ValueError, UnicodeError, RecursionError):
-                raise ProviderError("invalid or unsafe provider response") from None
+                raise ProviderError("invalid or unsafe provider response", category=FailureCategory.ENVELOPE) from None
             return value, attempt, time.perf_counter() - started
         raise ProviderError("retry budget exhausted")
 
@@ -184,19 +211,23 @@ class NebiusProvider:
 
     def generate_budgeted(self, request: GenerationRequest, reservation) -> GenerationResponse:
         from .live_budget import BudgetError, WorkflowReservation
+        observation = transport_observation()
+        if observation is not None:
+            observation.attempted = False
         try:
             if not isinstance(reservation, WorkflowReservation) or self._attempts != 1:
                 raise BudgetError('invalid permit')
             reservation.claim_transport(request)
         except BudgetError:
-            raise ProviderError('workflow reservation is absent or invalid') from None
+            raise ProviderError('workflow reservation is absent or invalid', category=FailureCategory.REQUEST) from None
         return self._generate(request)
 
     def _generate(self, request: GenerationRequest) -> GenerationResponse:
         if not self._allow_paid:
-            raise ProviderError("paid inference is disabled; separate approval and explicit opt-in are required")
+            raise ProviderError("paid inference is disabled; separate approval and explicit opt-in are required",
+                                category=FailureCategory.REQUEST)
         if request.model != self._settings.model:
-            raise ProviderError("request model differs from configured model")
+            raise ProviderError("request model differs from configured model", category=FailureCategory.REQUEST)
         try:
             bound = QwenTokenBound(request.model).request_bound(request.system, request.user, request.schema)
             if (any(type(n) is not int or n <= 0 for n in (request.input_token_bound,request.output_tokens,request.context_tokens))
@@ -205,7 +236,7 @@ class NebiusProvider:
                     or request.context_tokens > 262144):
                 raise ValueError
         except (ValueError, TypeError, UnicodeError):
-            raise ProviderError("invalid request or unverified model token budget") from None
+            raise ProviderError("invalid request or unverified model token budget", category=FailureCategory.REQUEST) from None
         payload = {"model": request.model, "messages": [{"role": "system", "content": request.system},
                     {"role": "user", "content": request.user}], "temperature": 0, "max_tokens": request.output_tokens,
                    "n": 1, "stream": False, "store": False,
@@ -219,6 +250,10 @@ class NebiusProvider:
                     or message.get("refusal") or message.get("tool_calls") or message.get("function_call")
                     or not isinstance(message["content"], str) or not message["content"].strip()):
                 raise ValueError
+        except (ValueError, TypeError, KeyError, IndexError):
+            raise ProviderError("model response, finish state or usage failed validation",
+                                category=FailureCategory.ENVELOPE) from None
+        try:
             raw_usage = value.get("usage")
             usage = None
             if raw_usage is not None:
@@ -228,4 +263,5 @@ class NebiusProvider:
                 usage = TokenUsage(*nums)
             return GenerationResponse(message["content"], value["model"], choice["finish_reason"], usage, elapsed, attempts)
         except (ValueError, TypeError, KeyError, IndexError):
-            raise ProviderError("model response, finish state or usage failed validation") from None
+            raise ProviderError("model response, finish state or usage failed validation",
+                                category=FailureCategory.USAGE) from None

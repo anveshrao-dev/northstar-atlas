@@ -168,6 +168,11 @@ class LiveGraphTests(unittest.TestCase):
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.budget.inspect_history().attempts_consumed, 7)
         self.assertEqual(json.loads(self.path.read_text())['workflows'][0]['status'], 'uncertain')
+        diagnostic = json.loads(self.path.with_name('provider-failure.json').read_bytes())
+        self.assertEqual((diagnostic['category'], diagnostic['stage'], diagnostic['transport_attempted'],
+                          diagnostic['http_status']), ('transport_timeout', 'router', True, None))
+        self.assertNotIn('transport_timeout', result.text)
+        self.assertNotIn('private transport detail', json.dumps(diagnostic))
 
     def test_revoked_operator_flag_and_pinecone_prevent_reservation(self):
         self.wire(); owner = self.owner()

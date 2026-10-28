@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 
 from .llm import MODEL_ID, GenerationRequest, GenerationResponse, QwenTokenBound, TokenUsage, canonical_json
 from .project import contained_path, validate_project_root
+from .provider_diagnostics import FailureCategory, failure_bytes, observe_transport
 
 LINEAR = 'linear_v1'
 GRAPH = 'llm_routing_grading_semantic_v1'
@@ -413,6 +414,38 @@ class PersistentBudget:
         finally:
             os.close(directory)
 
+    def _record_provider_failure(self, raw: bytes):
+        """Latest failure only, under the held budget lock; never changes ledger data.
+
+        A crash can leave one fixed pending file. Do not overwrite it or create
+        more files: diagnostics then need operator review. Failure to save these
+        optional diagnostics must not mask the original failure or skip accounting.
+        """
+        temporary = self.directory / 'provider-failure.pending'
+        target = self.directory / 'provider-failure.json'
+        created = False
+        try:
+            self._paths()
+            _require(type(raw) is bytes and len(raw) <= 512)
+            if os.path.lexists(target):
+                info = target.lstat()
+                _require(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+                         and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1)
+                # NONBLOCK also prevents a raced FIFO replacement from hanging settlement.
+                with os.fdopen(os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as stream:
+                    self._opened_file(stream.fileno(), target)
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            created = True
+            with os.fdopen(fd, 'wb') as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+            self._paths()
+            os.replace(temporary, target)
+            self._sync_directory()
+        finally:
+            if created and os.path.lexists(temporary):
+                temporary.unlink()
+
     def _mark_settlement(self):
         """A durable guard prevents an ambiguous closed write from releasing funds."""
         self._paths()
@@ -567,26 +600,34 @@ class WorkflowReservation:
         self._flow['calls'].append(call); self._save()
         self._active = request
         self._transport_claimed = False
-        try:
-            guarded = getattr(provider, 'generate_budgeted', None)
-            response = guarded(request, self) if callable(guarded) else provider.generate(request)
-            _require(isinstance(response, GenerationResponse) and response.model == MODEL_ID
-                     and type(response.attempts) is int and response.attempts == 1
-                     and response.usage is not None)
-            if response.usage is not None:
+        with observe_transport() as observation:
+            category = FailureCategory.INTERNAL
+            try:
+                guarded = getattr(provider, 'generate_budgeted', None)
+                response = guarded(request, self) if callable(guarded) else provider.generate(request)
+                category = FailureCategory.ENVELOPE
+                _require(isinstance(response, GenerationResponse) and response.model == MODEL_ID
+                         and type(response.attempts) is int and response.attempts == 1)
+                category = FailureCategory.USAGE
                 _require(isinstance(response.usage, TokenUsage))
                 usage = {k: getattr(response.usage, k) for k in ('prompt_tokens','completion_tokens','total_tokens')}
                 _validate_usage(usage, request.input_token_bound, request.output_tokens)
                 call['usage'] = usage
-            call['status'] = 'returned'
-            return response
-        except BaseException:
-            call['status'] = 'failed_or_uncertain'
-            raise
-        finally:
-            self._active = None
-            call['finished_at'] = self._budget.clock().isoformat()
-            self._save()
+                call['status'] = 'returned'
+                return response
+            except BaseException as error:
+                call['status'] = 'failed_or_uncertain'
+                try:
+                    self._budget._record_provider_failure(failure_bytes(error, observation,
+                        stage=stage, ordinal=ordinal, started_at=call['started_at'],
+                        fallback=category if isinstance(error, BudgetError) else FailureCategory.INTERNAL))
+                except (OSError, ValueError):
+                    pass  # Optional diagnostics cannot authorize retries or bypass settlement.
+                raise
+            finally:
+                self._active = None
+                call['finished_at'] = self._budget.clock().isoformat()
+                self._save()
 
 
 class StageProvider:
