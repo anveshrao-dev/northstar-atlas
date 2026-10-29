@@ -166,24 +166,37 @@ def run_demo(budget, request, *, plan_sha256, approved_run_sha256, question_sha2
         digest(question_sha256)
         _require(approved_run_sha256 == run_approval(plan_sha256)
                  and sha(request.question.encode('utf-8')) == question_sha256)
-        with budget.reserve(request, diagnostic_approval=plan_sha256) as reservation:
-            reservation.check_setup(budget, profile=LINEAR, backend='pinecone')
-            _require(reservation.envelope == (1, 30720, 2048))
-            require_private_preview()
-            reservation.check_setup(budget, profile=LINEAR, backend='pinecone')
-            # Existing opener verifies Pinecone confirmation, publication and remote audit.
-            # It constructs a reservation-required, one-attempt Nebius adapter.
-            with open_qa_service(budget.root, backend='pinecone', allow_paid=True, model=MODEL_ID,
-                                 budget=budget, reservation=reservation) as service:
+        def execute_once():
+            with budget.reserve(request, diagnostic_approval=plan_sha256) as reservation:
                 reservation.check_setup(budget, profile=LINEAR, backend='pinecone')
-                result = service.ask(request.question, mode=request.mode,
-                                     reference_date=request.reference_date, reservation=reservation)
-            _require(isinstance(result, (QASuccess, QAFailure)))
+                _require(reservation.envelope == (1, 30720, 2048))
+                require_private_preview()
+                reservation.check_setup(budget, profile=LINEAR, backend='pinecone')
+                # Existing opener verifies Pinecone confirmation, publication and remote audit.
+                # It constructs a reservation-required, one-attempt Nebius adapter.
+                with open_qa_service(budget.root, backend='pinecone', allow_paid=True, model=MODEL_ID,
+                                     budget=budget, reservation=reservation) as service:
+                    reservation.check_setup(budget, profile=LINEAR, backend='pinecone')
+                    result = service.ask(request.question, mode=request.mode,
+                                         reference_date=request.reference_date, reservation=reservation)
+                _require(isinstance(result, (QASuccess, QAFailure)))
+            return result
+
+        from .result_capture import capture_result
+        result = capture_result(execute_once, root=budget.root, invocation_id=request.invocation_id)
         if isinstance(result, QASuccess):
             return DiagnosticOutcome(True, result.public.kind, 'accepted', result.public)
         return DiagnosticOutcome(False, 'error', 'workflow_rejected')
     except Exception:
         return DiagnosticOutcome(False, 'error', 'demonstration_denied_or_failed')
+
+
+def format_result(result: DiagnosticOutcome) -> str:
+    """Present only an outcome released after accounting and private capture."""
+    summary = f'Demonstration result: {result.kind}; {result.code}. No further invocation attempted.'
+    if result.accepted and result.public is not None:
+        return result.public.text + '\n' + summary
+    return summary
 
 
 def main(argv=None):
@@ -240,7 +253,7 @@ def main(argv=None):
             result = run_demo(budget, request, plan_sha256=args.plan, approved_run_sha256=args.approve_run,
                 question_sha256=args.question_sha256, allow_live=args.allow_live,
                 other_writers_stopped=args.other_writers_stopped)
-            print(f'Demonstration result: {result.kind}; {result.code}. No further invocation attempted.')
+            print(format_result(result))
             return 0 if result.accepted else 1
         return 0
     except Exception:

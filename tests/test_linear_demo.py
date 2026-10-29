@@ -364,3 +364,70 @@ class LinearDemoTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), self.original)
         self.assertEqual(self.window.read_bytes(), self.original_window)
         for private in (BILLING, str(self.root), self.spec.question): self.assertNotIn(private, output.getvalue())
+
+
+    def saved_result(self):
+        return json.loads((self.root/'.local/linear-demo-results'/f'{self.spec.invocation_id}.json').read_bytes())
+
+    def test_public_result_saved_after_settlement_before_presentation(self):
+        self.activate_fixture(); self.wire()
+        result = self.run_once()
+        self.assertTrue(result.accepted)
+        saved = self.saved_result()
+        self.assertEqual(saved['status'], 'accepted')
+        self.assertEqual(saved['answer_text'], result.public.text)
+        self.assertEqual(saved['citations'][0]['reference_id'], result.public.citations[0].reference_id)
+        self.assertEqual(json.loads(self.path.read_bytes())['workflows'][-1]['status'], 'closed')
+        self.assertFalse(self.run_once().accepted)
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.saved_result(), saved)
+
+    def test_rejected_result_saved_without_private_error_or_candidate(self):
+        self.activate_fixture(); self.wire(failure=httpx.ReadTimeout('PRIVATE'))
+        result = self.run_once()
+        self.assertFalse(result.accepted)
+        saved = self.saved_result()
+        self.assertEqual(saved['status'], 'not_accepted')
+        self.assertEqual(saved['failure_code'], 'provider_failed')
+        self.assertNotIn('answer_text', saved)
+        self.assertNotIn('PRIVATE', json.dumps(saved))
+        self.assertEqual(json.loads(self.path.read_bytes())['workflows'][-1]['status'], 'uncertain')
+
+    def test_setup_exception_recorded_and_no_retry(self):
+        self.activate_fixture(); self.wire()
+        with patch('northstar_atlas.qa.open_retriever', side_effect=ValueError('PRIVATE')):
+            result = self.run_once()
+        self.assertFalse(result.accepted)
+        self.assertEqual(self.saved_result()['status'], 'outcome_unknown')
+        self.assertNotIn('PRIVATE', json.dumps(self.saved_result()))
+        self.assertFalse(self.run_once().accepted)
+        self.assertFalse(self.sent)
+
+    def test_settlement_failure_never_records_or_publishes_accepted_answer(self):
+        self.activate_fixture(); self.wire()
+        with patch.object(self.budget, '_settle', side_effect=OSError('PRIVATE')):
+            result = self.run_once()
+        self.assertFalse(result.accepted)
+        self.assertEqual(self.saved_result()['status'], 'outcome_unknown')
+        self.assertNotIn('answer_text', self.saved_result())
+        self.assertEqual(len(self.sent), 1)
+
+    def test_cli_formatter_failure_leaves_saved_result_without_second_inference(self):
+        self.activate_fixture(); self.wire()
+        question = self.root/'.local/question.txt'
+        question.write_text(self.spec.question); question.chmod(0o600)
+        argv = ['--root', str(self.root), 'run', '--plan', self.preview.plan_sha256,
+            '--approve-run', demo.run_approval(self.preview.plan_sha256),
+            '--invocation-id', self.spec.invocation_id, '--question-file', str(question),
+            '--question-sha256', sha(question.read_bytes()), '--mode', self.spec.mode,
+            '--backend', 'pinecone', '--profile', LINEAR,
+            '--reference-date', self.spec.reference_date.isoformat(), '--allow-live',
+            '--other-writers-stopped']
+        with patch.object(demo, 'configured_budget', return_value=self.budget), \
+                patch.object(demo, 'format_result', side_effect=ValueError('PRIVATE')), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(demo.main(argv), 1)
+            self.assertEqual(self.saved_result()['status'], 'accepted')
+            self.assertEqual(demo.main(argv), 1)
+        self.assertNotIn('PRIVATE', output.getvalue())
+        self.assertEqual(len(self.sent), 1)

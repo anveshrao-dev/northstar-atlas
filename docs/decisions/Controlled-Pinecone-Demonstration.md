@@ -89,8 +89,10 @@ prerequisites. No model provisioning or index repair is performed here.
 
 QAService uses the unchanged Nebius serializer, one HTTP attempt, reservation
 stage permit, grounding, citation validation and safe public-result contract.
-Only accepted public fields are returned to Python callers. The CLI prints a
-fixed acceptance/error summary, not raw responses or internal diagnostics.
+Only accepted public fields are returned to Python callers. After private result
+capture, the CLI prints the accepted public answer and a fixed outcome summary.
+Failures expose only the existing safe summary, not rejected candidates, raw
+responses or internal diagnostics.
 Ordinary-question obligation coverage remains `not_assessed`.
 
 After success, rejection, provider uncertainty, or a pre-provider failure, the
@@ -200,3 +202,73 @@ The unchanged UI export SHA-256 is
 `0d7a42c564358febb8bde9167fc108c7e022953946cd9fef5e8d1ec38f1e1faf`.
 No dependencies, policies, frozen questions, Nebius serialization, graph
 prompts, retrieval algorithms, index contents or live gates changed.
+
+
+## Durable public-result capture
+
+The one-shot runner now wraps its existing authorized execution with
+`northstar_atlas.result_capture.capture_result`. This selectively adapts the
+transferred recorder without introducing a second runner or spending authority.
+It reads `QASuccess.public` and `QAFailure.public`; neither result type exposes
+an `.answer` or `.error` attribute.
+
+After the initial explicit run-approval checks, a create-only, fsynced
+`in_progress` marker is claimed at
+`.local/linear-demo-results/<invocation-id>.json` under the application root.
+The existing authoritative reservation, private-preview checks, Pinecone
+confirmation/audit, service initialization, and single `service.ask()` invocation
+then run unchanged. Accepted content is recorded only after service cleanup and
+durable reservation finalization succeed. Formatting and CLI presentation follow
+successful record persistence. The result directory is owner-only (0700), files
+are 0600, and symlinks and unsafe writable parent directories are rejected.
+Existing `.local/` need not be made private: the result subdirectory is private.
+
+The bounded JSON record includes accepted public text, answer kind, text digest,
+citation identities, document versions/status, source hashes, chunk IDs, and
+allowlisted stage/backend/mode/call-count/token-usage fields. It does not serialize
+the complete diagnostics object. Failures record only an allowlisted error code;
+raised exceptions produce a fixed `outcome_unknown` record and propagate to the
+existing safe-error boundary. Exception names, messages, rejected model content,
+credentials, raw prompts and raw provider responses are not recorded.
+
+Atomic replacement checks the claimed file identity, fsyncs the new file and its
+directory, and precedes publication. Existing claims/results are never overwritten
+by a repeat invocation. The ledger's duplicate rejection remains authoritative,
+including if a result artifact is removed. Result records are not authorization,
+settlement evidence, refunds, or a new spending pool. Formatter failures retain the
+saved result. Interrupted or failed persistence leaves a blocking artifact and
+withholds the answer; operators must inspect accounting without automatically
+retrying or changing invocation IDs.
+
+The record limit is 32 KiB, with at most 8,000 answer characters and 40 citations;
+oversized content fails closed rather than being truncated. A disk failure or
+process interruption can prevent final capture even after inference completes.
+An `in_progress`/`outcome_unknown` artifact is not proof that no call occurred.
+This recorder improves retention, not answer faithfulness, and adds no permission
+to invoke an exhausted or otherwise unauthorized ledger.
+
+Reproduction uses the existing environment with network access blocked:
+
+```bash
+python -B -m unittest discover -s tests -p test_result_capture.py
+python -B -m unittest discover -s tests -p test_linear_demo.py
+python -B scripts/validate_evaluations.py
+```
+
+Live execution still requires separate approval of the exact request and invocation,
+a compatible existing authorization and remaining reservation allowance, current
+verified pricing, private-preview protection, valid credentials, and the existing
+Pinecone target/publication/remote-audit checks. No real ledger was accessed or amended,
+and no provider calls were made during this offline integration.
+
+
+Result-capture validation: 37 focused tests passed (28 runner tests and nine
+recorder tests). The complete network-blocked suite discovered 927 tests:
+914 passed, 13 existing opt-in integration checks skipped, zero failures
+(110.167 seconds). The skips remain two MiniLM checks, nine refiner checks,
+one cached-model Pinecone-store check, and one cached-model Chroma check.
+The M1.8 validator passed all 15 questions and verified source hashes, manifest,
+evidence references, modes and behaviors. Existing Streamlit bare-mode warnings
+were non-failing. Documentation links, Git whitespace and publication-pattern
+checks passed. Dependency manifests, policies, frozen evaluation data, retrieval,
+QAService, budget schema and authorization logic were unchanged.
