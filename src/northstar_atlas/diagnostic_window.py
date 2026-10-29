@@ -92,6 +92,10 @@ def _validate_demo_plan(budget, plan):
 
 def _validate_plan_fields(budget, plan):
     """Historical structure only. NOT authority to use an old filesystem identity."""
+    if isinstance(plan, dict) and plan.get('kind') == 'v2-five-question-demo-batch':
+        from .demo_batch import validate_batch_plan
+        validate_batch_plan(budget, plan)
+        return
     if isinstance(plan, dict) and plan.get('kind') == DEMO_KIND:
         _validate_demo_plan(budget, plan)
         return
@@ -132,7 +136,7 @@ def validate_plan(budget, plan):
     _validate_plan_fields(budget, plan)
     _require(plan['directory_identity'] == identity(budget.directory)
              and plan['lock_identity'] == identity(budget.lock_path))
-    if plan['kind'] in (RECOVERY_KIND, DEMO_KIND):
+    if plan['kind'] in (RECOVERY_KIND, DEMO_KIND, 'v2-five-question-demo-batch'):
         _require(plan['authority_identity'] == identity(budget.authority_root)
                  and plan['local_identity'] == identity(budget.authority_root / '.local'))
 
@@ -160,6 +164,10 @@ def read_window(budget, approval):
 
 
 def check_request(budget, plan, request, corpus, ledger):
+    if plan['kind'] == 'v2-five-question-demo-batch':
+        from .demo_batch import check_batch_request
+        check_batch_request(budget, plan, request, corpus, ledger)
+        return
     expected = dict(invocation_id=request.invocation_id, question_sha256=sha(request.question.encode('utf-8')),
         mode=request.mode, backend=request.backend, profile=request.profile,
         reference_date=request.reference_date.isoformat(), model=MODEL_ID, corpus_sha256=corpus)

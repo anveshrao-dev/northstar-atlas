@@ -178,6 +178,13 @@ def main():
         for relative in ('.local/tmp', '.local/cache', '.venv/bin'):
             contained_path(root, relative)
         budget = configured_budget(root)
+        if os.environ.get('NORTHSTAR_DEMO_BATCH_ENABLED', '0') != '0':
+            from .demo_batch import activation, remaining
+            if os.environ.get('VECTOR_STORE') != 'pinecone' or remaining(budget, activation()) <= 0:
+                raise LivePreflightError('batch activation is unavailable or exhausted')
+            require_secret_environment('pinecone')
+            print('Local batch preflight passed; access and remote integrity checks await each reserved submission.')
+            return 0
         if os.environ.get('NORTHSTAR_UI_ENABLE_GRAPH') == '1':
             # Graph startup is local only. External checks and provider creation
             # must wait for an explicit per-submission full-workflow reservation.

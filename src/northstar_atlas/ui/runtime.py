@@ -53,6 +53,7 @@ ERRORS = {
     'duplicate': 'This submission has already been attempted. It will not be sent again.',
     'busy': 'Another request is running. No request was queued; submit again when it finishes.',
     'budget_unavailable': 'The shared live budget is unavailable or this request is not authorized. No answer was accepted.',
+    'batch_exhausted': 'The approved five-question batch is exhausted. A separately reviewed batch approval is required.',
     'budget_exhausted': 'The five-attempt allowance for this server process has been reached.',
     'interrupted': 'This submission was interrupted or its outcome is unknown. It will not be retried automatically.',
     'cleanup_failed': 'Resources could not be fully disconnected. Restart the server before live use.',
@@ -206,6 +207,18 @@ class ResourceOwner:
         finally:
             self.lock.release()
 
+    def batch_remaining(self) -> int | None:
+        """Safe display-only status. None means unavailable, never a fresh allowance."""
+        try:
+            from northstar_atlas.demo_batch import activation, remaining
+            from northstar_atlas.live_budget import configured_budget
+            plan = activation()
+            if self._budget is None:
+                self._budget = configured_budget(self.root)
+            return remaining(self._budget, plan)
+        except Exception:
+            return None
+
     def submit(self, request: Submission, *, consent: bool) -> PublicView:
         if not request.valid() or request.demo:
             return error_view('invalid_input')
@@ -226,7 +239,18 @@ class ResourceOwner:
                 return error_view('cleanup_failed')
             if request.turn_id in self._seen:
                 return error_view('duplicate')
-            if self.attempts >= MAX_ATTEMPTS:
+            batch_enabled = os.environ.get('NORTHSTAR_DEMO_BATCH_ENABLED', '0') != '0'
+            if batch_enabled and request.workflow != STANDARD_WORKFLOW:
+                return error_view('workflow_disabled')
+            if batch_enabled and request.backend != 'pinecone':
+                return error_view('backend_disabled')
+            if batch_enabled:
+                remaining = self.batch_remaining()
+                if remaining is None:
+                    return error_view('budget_unavailable')
+                if remaining == 0:
+                    return error_view('batch_exhausted')
+            if not batch_enabled and self.attempts >= MAX_ATTEMPTS:
                 return error_view('budget_exhausted')
             self._seen.add(request.turn_id)
             self.attempts += 1  # Conservative: setup/provider/validation failures also consume an attempt.
@@ -234,6 +258,15 @@ class ResourceOwner:
             try:
                 if self._budget is None and os.environ.get('NORTHSTAR_CONTROLLED_LIVE') == '1':
                     self._budget = configured_budget(self.root)
+                if batch_enabled:
+                    from northstar_atlas.demo_batch import run_question
+                    self._disconnect()
+                    if self._broken:
+                        return error_view('cleanup_failed')
+                    result = run_question(self._budget, WorkflowRequest(request.turn_id, LINEAR,
+                        request.question, request.mode, request.backend, request.reference_date),
+                        opener=self._opener, limits=LIMITS)
+                    return project_result(result, request.mode)
                 scope = nullcontext(None) if self._budget is None else self._budget.reserve(WorkflowRequest(
                     request.turn_id, GRAPH if request.workflow == LANGGRAPH_WORKFLOW else LINEAR,
                     request.question, request.mode, request.backend, request.reference_date))
@@ -242,6 +275,8 @@ class ResourceOwner:
                 return result
             except (BudgetError, OSError, ValueError):
                 return error_view('budget_unavailable')
+            except Exception:
+                return error_view('internal_error')
         finally:
             self.lock.release()
 

@@ -136,7 +136,10 @@ def main() -> None:
         experience = st.radio('Experience', ('Offline demo', POLICY_SEARCH, 'Live Q&A'), key='experience', disabled=pending)
         demo = experience == 'Offline demo'
         retrieval_only = experience == POLICY_SEARCH
-        if demo or retrieval_only:
+        batch_live = (os.environ.get('NORTHSTAR_DEMO_BATCH_ENABLED', '0') != '0'
+                      and not demo and not retrieval_only)
+        batch_remaining = owner.batch_remaining() if batch_live else None
+        if demo or retrieval_only or batch_live:
             workflow = STANDARD_WORKFLOW
         else:
             workflow = st.selectbox(
@@ -149,12 +152,22 @@ def main() -> None:
                 st.warning('LangGraph live execution is disabled pending shared budget coordinator and security activation approval. No provider request will be sent.')
             elif workflow == LANGGRAPH_WORKFLOW:
                 st.caption('LangGraph requires a full durable workflow reservation. Budget, pricing, evidence and private-access checks must pass before execution.')
+        if batch_live:
+            st.caption('Approved batch · Standard RAG · Pinecone')
+            if batch_remaining is None:
+                st.warning('Batch authorization or budget is unavailable. Live questions are disabled.')
+            elif batch_remaining == 0:
+                st.warning('The approved five-question batch is exhausted. A new reviewed approval is required.')
+            else:
+                st.caption(f'Remaining batch submissions: {batch_remaining} of 5. Shared across sessions and restarts.')
         mode = st.selectbox('Policy scope', ('approved_only', 'draft_review'), key='mode', disabled=pending,
                             format_func=lambda v: {'approved_only': 'Approved policies only',
                                                    'draft_review': 'Approved + proposed drafts'}[v])
         backends = ('chroma', 'pinecone') if pinecone_enabled and not retrieval_only else ('chroma',)
+        if batch_live:
+            backends = ('pinecone',)
         if st.session_state.get('backend') not in backends:
-            st.session_state.backend = 'chroma'
+            st.session_state.backend = backends[0]
         backend = st.selectbox('Retrieval backend', backends, key='backend', disabled=pending,
                                format_func=lambda v: 'Chroma · local' if v == 'chroma' else 'Pinecone · hosted')
         if retrieval_only:
@@ -208,7 +221,9 @@ def main() -> None:
         queue(st.session_state.question)
 
     st.chat_input('Ask about a policy…', key='question', max_chars=MAX_QUESTION_CHARS,
-                  disabled=(pending or (not demo and not retrieval_only and not (live_enabled and consent))
+                  disabled=(pending or (batch_live and (batch_remaining is None or batch_remaining == 0
+                                                       or not pinecone_enabled))
+                            or (not demo and not retrieval_only and not (live_enabled and consent))
                             or (not demo and not retrieval_only and workflow == LANGGRAPH_WORKFLOW
                                 and not graph_enabled)), on_submit=queue_chat)
     if conversation.pending is not None:
