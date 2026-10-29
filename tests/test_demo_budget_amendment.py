@@ -344,3 +344,94 @@ class DemoAmendmentTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(),self.original)
         self.assertTrue(self.budget.pending_path.exists())
         with self.assertRaises(BudgetError): self.apply(preview)
+
+    def test_empty_donor_from_real_transition_preserved_and_duplicate_rejected(self):
+        from northstar_atlas import budget_transition as transition
+        from test_budget_transition import history
+        legacy=history(); legacy['attempts']=[]  # Valid expired historical pricing is retained.
+        donor_raw=(json.dumps(legacy,indent=3)+'\n').encode()
+        self.path.write_bytes(donor_raw)
+        transition_preview=transition.prepare_transition(self.budget,self.price,
+            confirmed_billing_scope=BILLING,approved_max_attempts=1,
+            approved_max_reserved_usd='0.100000',verified_pricing_sha256=sha(encode(self.price)),
+            writers_stopped=True,dry_run=False)
+        transition.apply_transition(self.budget,transition_preview.plan_sha256,
+            approved_plan_sha256=transition_preview.plan_sha256,writers_stopped=True)
+        with self.budget.reserve(self.first) as permit:
+            permit.invoke(Provider(),'generator',0,request())
+        original=self.path.read_bytes(); original_value=json.loads(original)
+        state_before=self.budget.inspect_history()
+        preview=self.prepare()
+        candidate_raw=(preview.artifact_directory/'candidate.v2.json').read_bytes()
+        # The canonical donor representation produced by the existing transition
+        # is preserved as identical bytes, including all historical price fields.
+        donor_member=b'"legacy":'+encode(legacy)+b',"max_attempts":'
+        self.assertIn(donor_member,original)
+        self.assertIn(donor_member,candidate_raw)
+        self.assertEqual((preview.artifact_directory/'backup.v2.json').read_bytes(),original)
+        self.assertEqual((transition_preview.artifact_directory/'backup.v1.json').read_bytes(),donor_raw)
+        self.apply(preview)
+        self.assertIn(donor_member,self.path.read_bytes())
+        candidate=json.loads(self.path.read_bytes())
+        self.assertEqual(candidate['legacy'],legacy)
+        self.assertEqual(candidate['workflows'],original_value['workflows'])
+        self.assertEqual(candidate['pricing_revisions'],original_value['pricing_revisions'])
+        self.assertEqual(candidate['max_attempts'],2)
+        self.assertEqual(candidate['max_reserved_usd'],'0.100000')
+        budget=self.updated()
+        self.assertEqual(budget.inspect_history(diagnostic_approval=preview.plan_sha256),state_before)
+        self.assertEqual(state_before.reserved_usd,Decimal('0.003687'))
+        with budget.reserve(self.spec,diagnostic_approval=preview.plan_sha256) as permit:
+            permit.invoke(Provider(),'generator',0,request())
+        with self.assertRaises(BudgetError):
+            with budget.reserve(self.spec,diagnostic_approval=preview.plan_sha256): self.fail('duplicate')
+        self.assertIn(donor_member,self.path.read_bytes())
+        self.assertEqual(json.loads(self.path.read_bytes())['workflows'][0],original_value['workflows'][0])
+
+    def test_valid_empty_unpriced_legacy_donor_is_retained(self):
+        from test_budget_transition import history
+        legacy=history(); legacy.update(attempts=[],pricing=None)
+        original={**self.history,'legacy':legacy}
+        self.budget._validate_document(original,current=False)
+        self.path.write_bytes(encode(original))
+        preview=self.prepare(); self.apply(preview)
+        self.assertEqual(json.loads(self.path.read_bytes())['legacy'],legacy)
+        self.assertIn(b'"legacy":'+encode(legacy)+b',"max_attempts":',self.path.read_bytes())
+        self.assertEqual(self.updated().inspect_history(diagnostic_approval=preview.plan_sha256).reserved_usd,
+                         Decimal('0.003687'))
+
+    def test_nonempty_malformed_and_incompatible_legacy_rejected(self):
+        from test_budget_transition import history
+        from northstar_atlas.live_budget import _legacy
+        nonempty=history()
+        self.assertEqual(_legacy(nonempty)[0],1)  # Structurally valid, but out of scope.
+        empty={**nonempty,'attempts':[]}
+        donors=[nonempty,{},[],False,
+            {**empty,'version':2}, {**empty,'scope':'f'*32}, {**empty,'model':'other'},
+            {**empty,'max_attempts':1}, {**empty,'max_reserved_usd':'0.20'},
+            {**empty,'attempts':{}}, {**empty,'attempts':None},
+            {**empty,'pricing':{}}, {**empty,'unexpected':'field'}]
+        before=set(self.path.parent.iterdir())
+        for donor in donors:
+            raw=encode({**self.history,'legacy':donor}); self.path.write_bytes(raw)
+            with self.subTest(donor=donor),self.assertRaises(BudgetError): self.prepare()
+            self.assertEqual(self.path.read_bytes(),raw)
+            self.assertEqual(set(self.path.parent.iterdir()),before)
+
+    def test_recomputed_candidate_digest_cannot_rewrite_empty_legacy(self):
+        from test_budget_transition import history
+        legacy=history(); legacy['attempts']=[]
+        original=encode({**self.history,'legacy':legacy}); self.path.write_bytes(original)
+        preview=self.prepare()
+        candidate_path=preview.artifact_directory/'candidate.v2.json'
+        candidate=json.loads(candidate_path.read_bytes())
+        candidate['legacy']['pricing']['source']='https://nebius.com/prices/changed'
+        raw=encode(candidate); candidate_path.write_bytes(raw)
+        plan_path=preview.artifact_directory/'plan.json'
+        plan=json.loads(plan_path.read_bytes()); plan['candidate_sha256']=sha(raw)
+        plan_raw=encode(plan); plan_path.write_bytes(plan_raw)
+        plan_id=sha(plan_raw)
+        preview.artifact_directory.rename(preview.artifact_directory.with_name('demo-amendment-'+plan_id))
+        with self.assertRaises(BudgetError):
+            amendment.apply_amendment(self.budget,plan_id,approved_plan_sha256=plan_id,writers_stopped=True)
+        self.assertEqual(self.path.read_bytes(),original)

@@ -43,7 +43,8 @@ def _candidate(budget, source, pricing_revision, contract):
              and budget.billing_scope == DEMO_BILLING_SCOPE
              and old['max_attempts'] == 1 and old['max_reserved_usd'] == '0.100000'
              and state.attempts_consumed == 1 and state.reserved_usd == Decimal('0.003687')
-             and old['legacy'] is None and len(old['workflows']) == 1
+             and (old['legacy'] is None or old['legacy']['attempts'] == [])
+             and len(old['workflows']) == 1
              and 'diagnostic_request_sha256' not in old)
     first = old['workflows'][0]
     _require(first['profile'] == LINEAR and first['status'] in ('closed', 'uncertain')
