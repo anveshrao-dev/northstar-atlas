@@ -271,7 +271,12 @@ class PersistentBudget:
                  and (info.st_dev, info.st_ino) == (current.st_dev, current.st_ino))
 
     @contextmanager
-    def _locked(self, *, diagnostic_approval=None):
+    def _physical_lock(self):
+        """Existing filesystem exclusion only; never grants inference authority.
+
+        Operator recovery can inspect a stale approval under this same lock.
+        Runtime operations must continue to use _locked(), including its window.
+        """
         try:
             self._paths()
             fd = os.open(self.lock_path, os.O_RDWR | os.O_NOFOLLOW)
@@ -286,17 +291,22 @@ class PersistentBudget:
                 self._paths()
                 self._opened_file(lock.fileno(), self.lock_path)
                 _require(not self._blocked and not os.path.lexists(self.pending_path))
-                window = self.directory / 'diagnostic-window.json'
-                plan = None
-                if os.path.lexists(window) or diagnostic_approval is not None:
-                    from .diagnostic_window import read_window
-                    try:
-                        plan = read_window(self, diagnostic_approval)
-                    except (OSError, ValueError, TypeError, KeyError, RecursionError):
-                        raise BudgetError('diagnostic window unavailable or unauthorized; inference denied') from None
-                yield plan
+                yield
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
+
+    @contextmanager
+    def _locked(self, *, diagnostic_approval=None):
+        with self._physical_lock():
+            window = self.directory / 'diagnostic-window.json'
+            plan = None
+            if os.path.lexists(window) or diagnostic_approval is not None:
+                from .diagnostic_window import read_window
+                try:
+                    plan = read_window(self, diagnostic_approval)
+                except (OSError, ValueError, TypeError, KeyError, RecursionError):
+                    raise BudgetError('diagnostic window unavailable or unauthorized; inference denied') from None
+            yield plan
 
     def _read_bytes(self):
         """Bounded, identity-checked read; callers already hold the existing lock."""
