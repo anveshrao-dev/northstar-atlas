@@ -15,6 +15,8 @@ from .project import contained_path
 
 WINDOW_NAME = 'diagnostic-window.json'
 RECOVERY_KIND = 'v2-pinecone-graph-recovery'
+DEMO_KIND = 'v2-dedicated-demo-amendment'
+DEMO_BILLING_SCOPE = 'northstar-atlas-week2-demo'
 
 
 def sha(raw: bytes) -> str:
@@ -68,8 +70,31 @@ def validate_recovery_contract(value):
     _require(all(value[k] == v for k, v in snapshot_binding().items()))
 
 
+def _validate_demo_plan(budget, plan):
+    _fields(plan, 'version kind authority authority_identity local_identity directory_identity lock_identity '
+                  'ledger_identity source_sha256 candidate_sha256 scope billing_scope model old_cap new_cap '
+                  'cost_cap max_call_reserved_usd pricing_sha256 request')
+    _require(type(plan['version']) is int and plan['version'] == 4
+             and plan['kind'] == DEMO_KIND and plan['authority'] == str(budget.authority_root)
+             and plan['scope'] == budget.scope
+             and plan['billing_scope'] == budget.billing_scope == DEMO_BILLING_SCOPE
+             and plan['model'] == MODEL_ID and type(plan['old_cap']) is int and plan['old_cap'] == 1
+             and type(plan['new_cap']) is int and plan['new_cap'] == 2
+             and plan['cost_cap'] == '0.100000' and plan['max_call_reserved_usd'] == '0.010000')
+    for key in ('source_sha256', 'candidate_sha256', 'pricing_sha256'): digest(plan[key])
+    for key in ('authority_identity', 'local_identity', 'directory_identity', 'lock_identity', 'ledger_identity'):
+        pair = plan[key]
+        _require(isinstance(pair, list) and len(pair) == 2
+                 and all(type(n) is int and n >= 0 for n in pair))
+    validate_contract(plan['request'], profile=LINEAR)
+    _require(plan['request']['mode'] == 'approved_only')
+
+
 def _validate_plan_fields(budget, plan):
     """Historical structure only. NOT authority to use an old filesystem identity."""
+    if isinstance(plan, dict) and plan.get('kind') == DEMO_KIND:
+        _validate_demo_plan(budget, plan)
+        return
     linear = isinstance(plan, dict) and plan.get('kind') == 'v2-linear-demo-amendment'
     recovery = isinstance(plan, dict) and plan.get('kind') == RECOVERY_KIND
     fields = 'version kind authority directory_identity lock_identity ledger_identity '
@@ -107,7 +132,7 @@ def validate_plan(budget, plan):
     _validate_plan_fields(budget, plan)
     _require(plan['directory_identity'] == identity(budget.directory)
              and plan['lock_identity'] == identity(budget.lock_path))
-    if plan['kind'] == RECOVERY_KIND:
+    if plan['kind'] in (RECOVERY_KIND, DEMO_KIND):
         _require(plan['authority_identity'] == identity(budget.authority_root)
                  and plan['local_identity'] == identity(budget.authority_root / '.local'))
 

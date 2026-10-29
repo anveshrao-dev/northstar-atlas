@@ -15,7 +15,7 @@ from pathlib import Path
 from .budget_amendment import AmendmentPreview
 from .budget_transition import _encode, _decode, _read_private, _write_private, _private_directory, _sync
 from .diagnostic_retest import DiagnosticOutcome
-from .diagnostic_window import WINDOW_NAME, digest, identity, sha, validate_contract, validate_plan, read_private
+from .diagnostic_window import DEMO_BILLING_SCOPE, WINDOW_NAME, digest, identity, sha, validate_contract, validate_plan, read_private
 from .live_budget import (BudgetError, BudgetPolicy, PersistentBudget, WorkflowRequest,
                           GRAPH, LINEAR, _estimate, _require, _SLOTS, configured_budget)
 from .llm import MODEL_ID
@@ -160,7 +160,9 @@ def run_demo(budget, request, *, plan_sha256, approved_run_sha256, question_sha2
     try:
         _require(allow_live is True and other_writers_stopped is True
                  and os.environ.get('NORTHSTAR_CONTROLLED_LIVE') == '1'
-                 and isinstance(budget, PersistentBudget) and budget.policy == BudgetPolicy(16)
+                 and isinstance(budget, PersistentBudget)
+                 and (budget.policy == BudgetPolicy(16)
+                      or (budget.policy == BudgetPolicy(2) and budget.billing_scope == DEMO_BILLING_SCOPE))
                  and budget.before_request is require_private_preview and isinstance(request, WorkflowRequest)
                  and request.profile == LINEAR and request.backend == 'pinecone')
         digest(question_sha256)
