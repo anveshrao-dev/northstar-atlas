@@ -165,8 +165,6 @@ class ResourceOwner:
             return error_view('invalid_input')
         if not self.live_enabled or consent is not True:
             return error_view('opt_in_required')
-        if request.workflow == LANGGRAPH_WORKFLOW and request.backend == 'pinecone':
-            return error_view('workflow_backend_unsupported')
         if (request.workflow == LANGGRAPH_WORKFLOW
                 and (not self.graph_enabled
                      or (self._controlled_graph and not graph_operator_authorized()))):

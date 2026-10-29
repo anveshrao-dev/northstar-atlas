@@ -386,7 +386,8 @@ class OrchestrationTests(unittest.TestCase):
     def test_factory_pinecone_is_explicit_and_fingerprint_mismatch_closes(self):
         closed, opened = [], []
         @contextmanager
-        def retriever(root, backend):
+        def retriever(root, backend, *, snapshot_id):
+            self.assertEqual(snapshot_id, 'a'*64)
             opened.append(backend)
             try: yield FixtureStore(), SimpleNamespace(model=MODEL), 'wrong-fingerprint'
             finally: closed.append(backend)

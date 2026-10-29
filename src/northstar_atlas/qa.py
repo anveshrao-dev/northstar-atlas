@@ -321,7 +321,10 @@ class QAService:
 
 @contextmanager
 def open_retriever(root: Path, backend: str, *, strategy: str = "dense", snapshot_id: str | None = None):
-    """Normal verified retrieval, never index/provision or regenerate document vectors."""
+    """Verified retrieval; an explicit snapshot pins Pinecone's active generation.
+
+    Never index/provision, switch publication, or regenerate document vectors.
+    """
     root = validate_project_root(root)
     if strategy not in ("dense", "bm25", "hybrid") or backend not in ("chroma", "pinecone"):
         raise GenerationError("unsupported retrieval backend or strategy")
@@ -334,7 +337,8 @@ def open_retriever(root: Path, backend: str, *, strategy: str = "dense", snapsho
             yield lexical, None, catalog.fingerprint
         else:
             from northstar_atlas.vector_store.hybrid import HybridStore
-            with open_retriever(root, backend) as (dense, embedder, fingerprint):
+            options = {} if snapshot_id is None else {"snapshot_id": snapshot_id}
+            with open_retriever(root, backend, **options) as (dense, embedder, fingerprint):
                 if fingerprint != catalog.fingerprint or embedder.model != catalog.config.model:
                     raise GenerationError("hybrid corpus/model configuration differs")
                 yield HybridStore(dense, lexical), embedder, fingerprint
@@ -356,6 +360,8 @@ def open_retriever(root: Path, backend: str, *, strategy: str = "dense", snapsho
             target, index = connect_target(client, meter, settings)
             with index:
                 snapshot = active_snapshot(root, target)
+                if snapshot_id is not None and snapshot.snapshot_id != snapshot_id:
+                    raise GenerationError("active Pinecone snapshot differs from requested snapshot")
                 store = open_store(root, snapshot, target, client, index)
                 store.audit()
                 yield store, embedder, fingerprint

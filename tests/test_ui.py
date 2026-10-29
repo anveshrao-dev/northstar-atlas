@@ -163,21 +163,40 @@ class UIRuntimeTests(unittest.TestCase):
         self.assertFalse(self.opened)
         self.assertEqual(owner.attempts, 0)
 
-    def test_graph_workflow_preserves_current_pinecone_factory_restriction(self):
+    def test_pinecone_graph_uses_explicit_backend_with_both_server_gates(self):
         opened = []
+        service = FakeService()
 
         @contextmanager
         def graph_opener(root, **kwargs):
             opened.append(kwargs)
-            yield FakeService()
+            yield service
 
         owner = self.ui.ResourceOwner(self.root, live_enabled=True, pinecone_enabled=True,
                                       graph_enabled=True, graph_opener=graph_opener)
         self.addCleanup(owner.close)
-        view = owner.submit(self.graph_request(backend='pinecone'), consent=True)
-        self.assertEqual(view.code, 'workflow_backend_unsupported')
-        self.assertFalse(opened)
-        self.assertEqual(owner.attempts, 0)
+        with patch.dict(os.environ, NORTHSTAR_CONTROLLED_LIVE='0'):
+            view = owner.submit(self.graph_request(backend='pinecone'), consent=True)
+        self.assertEqual(view.kind, 'answer')
+        self.assertEqual(opened, [dict(backend='pinecone', profile='llm_routing_grading_semantic_v1',
+                                     allow_paid=False, model=MODEL_ID)])
+        self.assertEqual(len(service.calls), 1)
+        self.assertEqual(owner.attempts, 1)
+
+    def test_pinecone_graph_still_requires_live_graph_backend_and_consent_gates(self):
+        for live, graph, pinecone, consent, code in (
+                (False, True, True, True, 'opt_in_required'),
+                (True, True, True, False, 'opt_in_required'),
+                (True, False, True, True, 'workflow_disabled'),
+                (True, True, False, True, 'backend_disabled')):
+            with self.subTest(code=code, consent=consent):
+                owner = self.ui.ResourceOwner(self.root, live_enabled=live, graph_enabled=graph,
+                    pinecone_enabled=pinecone, graph_opener=self.opener)
+                self.addCleanup(owner.close)
+                view = owner.submit(self.graph_request(backend='pinecone'), consent=consent)
+                self.assertEqual(view.code, code)
+                self.assertEqual(owner.attempts, 0)
+        self.assertFalse(self.opened)
 
     def test_fake_graph_service_uses_semantic_profile_and_reuses_resources(self):
         graph_result = structured_success(status=DRAFT)

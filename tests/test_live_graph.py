@@ -42,10 +42,10 @@ class LiveGraphTests(unittest.TestCase):
         self.fixture = semantic_fixtures.PhaseBSemanticGraphTests(); self.fixture.setUp()
         self.created = []; self.sent = []; self.closed = []
 
-    def request(self, ident='one'):
-        return Submission(ident, 'Who?', 'draft_review', 'chroma', AS_OF, workflow=LANGGRAPH_WORKFLOW)
+    def request(self, ident='one', backend='chroma'):
+        return Submission(ident, 'Who?', 'draft_review', backend, AS_OF, workflow=LANGGRAPH_WORKFLOW)
 
-    def wire(self, *, judgments=(), semantics=(), failure=None):
+    def wire(self, *, judgments=(), semantics=(), failure=None, backend='chroma'):
         _, dense, _, fake = self.fixture.make(judgments=judgments, semantics=semantics)
         def send(req):
             flow = json.loads(self.path.read_text())['workflows'][-1]
@@ -74,8 +74,9 @@ class LiveGraphTests(unittest.TestCase):
             finally:
                 self.closed.append(True)
         @contextmanager
-        def retriever(root, backend):
-            self.assertEqual(backend, 'chroma')
+        def retriever(root, selected, **kwargs):
+            self.assertEqual(selected, backend)
+            self.assertEqual(kwargs, {'snapshot_id': live_graph.SNAPSHOT_ID} if backend == 'pinecone' else {})
             yield dense, Mock(model=self.fixture.cat.config.model), self.fixture.cat.fingerprint
         self.enterContext(patch.object(live_graph, 'verify_graph_assets'))
         self.enterContext(patch('northstar_atlas.nebius.load_settings', return_value=NebiusSettings('synthetic-fixture')))
@@ -85,8 +86,9 @@ class LiveGraphTests(unittest.TestCase):
         # Exercise alternate retrieval without relying on ranking in this wiring test.
         self.enterContext(patch('northstar_atlas.vector_store.bm25.BM25Store', return_value=dense))
 
-    def owner(self):
-        owner = ResourceOwner(self.root, live_enabled=True, graph_enabled=True, budget=self.budget)
+    def owner(self, *, pinecone_enabled=False):
+        owner = ResourceOwner(self.root, live_enabled=True, graph_enabled=True,
+                              pinecone_enabled=pinecone_enabled, budget=self.budget)
         self.addCleanup(owner.close)
         return owner
 
@@ -174,13 +176,60 @@ class LiveGraphTests(unittest.TestCase):
         self.assertNotIn('transport_timeout', result.text)
         self.assertNotIn('private transport detail', json.dumps(diagnostic))
 
-    def test_revoked_operator_flag_and_pinecone_prevent_reservation(self):
+    def test_revoked_operator_flag_and_disabled_pinecone_prevent_reservation(self):
         self.wire(); owner = self.owner()
         with patch.dict(os.environ, NORTHSTAR_UI_ENABLE_GRAPH='0'):
             self.assertEqual(owner.submit(self.request(), consent=True).code, 'workflow_disabled')
         self.assertEqual(owner.submit(replace(self.request(), backend='pinecone'), consent=True).code,
-                         'workflow_backend_unsupported')
+                         'backend_disabled')
         self.assertFalse(json.loads(self.path.read_text())['workflows']); self.assertFalse(self.created)
+
+    def test_pinecone_seven_stages_keep_backend_bound_and_single_use(self):
+        self.enterContext(patch.dict(os.environ, NORTHSTAR_UI_ENABLE_PINECONE='1'))
+        self.wire(backend='pinecone', judgments=('uncertain', 'relevant'),
+                  semantics=('incomplete', 'supported'))
+        owner = self.owner(pinecone_enabled=True)
+        result = owner.submit(self.request(backend='pinecone'), consent=True)
+        self.assertEqual(result.kind, 'answer')
+        self.assertEqual(len(self.sent), 7)
+        flow = json.loads(self.path.read_text())['workflows'][0]
+        self.assertEqual((flow['profile'], flow['backend'], flow['status']), (GRAPH, 'pinecone', 'closed'))
+        self.assertEqual(self.budget.inspect_history().attempts_consumed, 7)
+        self.assertEqual(owner.submit(self.request(backend='pinecone'), consent=True).code, 'duplicate')
+        live_graph.verify_graph_assets.assert_called_with(self.root, backend='pinecone')
+        owner.close(); self.assertEqual(len(self.closed), 1)
+
+    def test_pinecone_permit_cannot_authorize_chroma_or_changed_cached_request(self):
+        self.enterContext(patch.dict(os.environ, NORTHSTAR_UI_ENABLE_PINECONE='1'))
+        self.wire(backend='pinecone')
+        request = WorkflowRequest('bound', GRAPH, 'Who?', 'draft_review', 'pinecone', AS_OF)
+        with self.budget.reserve(request) as permit:
+            with self.assertRaises(ValueError):
+                with live_graph.open_live_graph_service(self.root, backend='chroma',
+                        budget=self.budget, reservation=permit): pass
+            with live_graph.open_live_graph_service(self.root, backend='pinecone',
+                    budget=self.budget, reservation=permit) as service:
+                with self.assertRaises(ValueError):
+                    service.ask('Changed question', mode='draft_review', reference_date=AS_OF, reservation=permit)
+                self.assertFalse(self.created)
+                self.assertTrue(service.ask('Who?', mode='draft_review', reference_date=AS_OF,
+                                            reservation=permit).accepted)
+                # Even accidental mutation cannot use the existing authorization for a new backend.
+                service.backend = 'chroma'
+                with self.assertRaises(ValueError):
+                    service.ask('Who?', mode='draft_review', reference_date=AS_OF, reservation=permit)
+        self.assertEqual(len(self.created), 1)
+        self.assertEqual(len(self.sent), 4)
+
+    def test_pinecone_timeout_preserves_uncertain_seven_call_reservation(self):
+        self.enterContext(patch.dict(os.environ, NORTHSTAR_UI_ENABLE_PINECONE='1'))
+        self.wire(backend='pinecone', failure=httpx.ReadTimeout('private payload'))
+        result = self.owner(pinecone_enabled=True).submit(self.request(backend='pinecone'), consent=True)
+        self.assertEqual(result.kind, 'error'); self.assertFalse(result.citations)
+        flow = json.loads(self.path.read_text())['workflows'][0]
+        self.assertEqual((flow['backend'], flow['status'], len(flow['calls'])), ('pinecone', 'uncertain', 1))
+        self.assertEqual(self.budget.inspect_history().attempts_consumed, 7)
+        self.assertEqual(len(self.sent), 1)
 
     def test_access_failure_prevents_credentials_and_construction(self):
         self.wire(); self.access.side_effect = ValueError('private access detail')
@@ -271,8 +320,12 @@ class LiveGraphTests(unittest.TestCase):
             for change in ({'state':'incomplete'}, {'actual_count':188}, {'corpus_fingerprint':'stale'}):
                 with patch('northstar_atlas.vector_store.store.ChromaStore.status', return_value=ready | change):
                     with self.assertRaises(ValueError): live_graph.verify_graph_assets(self.root)
+        with patch('northstar_atlas.vector_store.store.ChromaStore', side_effect=AssertionError('Chroma not required')):
+            live_graph.verify_graph_assets(self.root, backend='pinecone')
+        with self.assertRaises(ValueError): live_graph.verify_graph_assets(self.root, backend='unknown')
         asset.unlink(); asset.symlink_to(ROOT / 'pyproject.toml')
         with self.assertRaises(ValueError): live_graph.verify_graph_assets(self.root)
         asset.unlink(); asset.symlink_to(blob)
         target.write_bytes(target.read_bytes() + b' ')
         with self.assertRaises(ValueError): live_graph.verify_graph_assets(self.root)
+        with self.assertRaises(ValueError): live_graph.verify_graph_assets(self.root, backend='pinecone')

@@ -61,6 +61,39 @@ class PreflightTests(unittest.TestCase):
             with self.assertRaises(live_preflight.LivePreflightError):
                 live_preflight.require_secret_environment('unknown')
 
+    def test_pinecone_graph_preflight_checks_local_assets_without_external_setup(self):
+        with patch.dict(os.environ, VECTOR_STORE='pinecone', NORTHSTAR_UI_ENABLE_GRAPH='1',
+                        NORTHSTAR_CONTROLLED_LIVE='1', NORTHSTAR_PRIVATE_PREVIEW_CONFIRMED='1',
+                        NORTHSTAR_UI_ENABLE_LIVE='0', NORTHSTAR_UI_ENABLE_PINECONE='0'), \
+             patch.object(Path, 'cwd', return_value=self.root), \
+             patch('northstar_atlas.live_budget.configured_budget') as factory, \
+             patch('northstar_atlas.live_graph.verify_graph_assets') as assets, \
+             patch.object(live_preflight, 'require_secret_environment') as secrets, \
+             patch.object(live_preflight, 'require_private_preview') as access, \
+             patch('northstar_atlas.qa.open_retriever') as retrieval, \
+             patch('northstar_atlas.nebius.load_settings') as credentials, \
+             patch('northstar_atlas.nebius.NebiusProvider') as provider, redirect_stdout(io.StringIO()):
+            self.assertEqual(live_preflight.main(), 0)
+            factory.return_value.check_ready.assert_called_once_with(profile='llm_routing_grading_semantic_v1')
+            assets.assert_called_once_with(self.root, backend='pinecone')
+            secrets.assert_called_once_with('pinecone')
+            for call in (access, retrieval, credentials, provider): call.assert_not_called()
+
+    def test_graph_preflight_keeps_operator_gates_and_backend_validation(self):
+        for changes in ({'NORTHSTAR_CONTROLLED_LIVE':'0'},
+                        {'NORTHSTAR_PRIVATE_PREVIEW_CONFIRMED':'0'}, {'VECTOR_STORE':'unknown'}):
+            with self.subTest(changes=changes), \
+                 patch.dict(os.environ, dict(VECTOR_STORE='pinecone', NORTHSTAR_UI_ENABLE_GRAPH='1',
+                    NORTHSTAR_CONTROLLED_LIVE='1', NORTHSTAR_PRIVATE_PREVIEW_CONFIRMED='1') | changes), \
+                 patch.object(Path, 'cwd', return_value=self.root), \
+                 patch('northstar_atlas.live_budget.configured_budget'), \
+                 patch('northstar_atlas.live_graph.verify_graph_assets') as assets, \
+                 patch.object(live_preflight, 'require_secret_environment') as secrets, \
+                 patch.object(live_preflight, 'require_private_preview') as access, \
+                 redirect_stdout(io.StringIO()):
+                self.assertEqual(live_preflight.main(), 1)
+                for call in (assets, secrets, access): call.assert_not_called()
+
 
 class LauncherTests(unittest.TestCase):
     def test_separate_launcher_keeps_gates_closed_until_preflight_and_preserves_backend(self):

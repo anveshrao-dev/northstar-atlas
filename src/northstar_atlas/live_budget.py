@@ -195,7 +195,6 @@ class WorkflowRequest:
                  and self.mode in ('approved_only', 'draft_review')
                  and self.backend in ('chroma', 'pinecone', 'custom')
                  and type(self.reference_date) is date)
-        _require(self.profile != GRAPH or self.backend != 'pinecone')
 
     def binding(self, corpus_hash):
         return hashlib.sha256(canonical_json([self.profile, self.question, self.mode,
@@ -362,7 +361,6 @@ class PersistentBudget:
                          and flow['id'] not in ids and flow['profile'] in _SLOTS
                          and flow['mode'] in ('approved_only', 'draft_review')
                          and flow['backend'] in ('chroma', 'pinecone', 'custom')
-                         and (flow['profile'] != GRAPH or flow['backend'] != 'pinecone')
                          and isinstance(flow['binding'], str) and re.fullmatch('[0-9a-f]{64}', flow['binding'])
                          and flow['price_id'] in prices and flow['status'] in ('reserved', 'closed', 'uncertain')
                          and isinstance(flow['calls'], list) and len(flow['calls']) <= len(_SLOTS[flow['profile']]))

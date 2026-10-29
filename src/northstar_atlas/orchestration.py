@@ -698,7 +698,8 @@ def open_graph_qa_service(root: Path, *, snapshot_id: str, backend: str | None =
         if (profile not in ('bounded_v1', PROFILE, SEMANTIC_PROFILE)
                 or not isinstance(phase_limits, PhaseALimits)
                 or (profile in (PROFILE, SEMANTIC_PROFILE)
-                    and (provider is None or allow_paid is not False or selected == 'pinecone'))):
+                    and (provider is None or allow_paid is not False
+                         or (profile == PROFILE and selected == 'pinecone')))):
             raise QAConfigurationError()
         if (selected not in ('chroma', 'pinecone') or not isinstance(strategy_plan, tuple)
                 or not 1 <= len(strategy_plan) <= 2 or len(set(strategy_plan)) != len(strategy_plan)
@@ -720,7 +721,10 @@ def open_graph_qa_service(root: Path, *, snapshot_id: str, backend: str | None =
         stores = {}
         embedder = None
         if any(s in ('dense', 'hybrid') for s in strategy_plan):
-            dense, embedder, fingerprint = resources.enter_context(open_retriever(root, selected))
+            # A graph's catalog and remote active publication must identify the
+            # same immutable snapshot, not merely the same corpus and model.
+            pin = {'snapshot_id': snapshot_id} if selected == 'pinecone' else {}
+            dense, embedder, fingerprint = resources.enter_context(open_retriever(root, selected, **pin))
             if fingerprint != cat.fingerprint or embedder.model != cat.config.model:
                 raise QAConfigurationError()
             stores['dense'] = dense

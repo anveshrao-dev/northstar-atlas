@@ -182,15 +182,16 @@ def main():
             # Graph startup is local only. External checks and provider creation
             # must wait for an explicit per-submission full-workflow reservation.
             from .live_graph import verify_graph_assets
+            backend = os.environ.get('VECTOR_STORE', 'chroma')
             if (os.environ.get('NORTHSTAR_CONTROLLED_LIVE') != '1'
-                    or os.environ.get('VECTOR_STORE', 'chroma') != 'chroma'
+                    or backend not in ('chroma', 'pinecone')
                     or os.environ.get('NORTHSTAR_PRIVATE_PREVIEW_CONFIRMED') != '1'):
                 raise LivePreflightError('graph activation configuration is incomplete')
             budget.check_ready(profile=GRAPH)
             stage = 'local graph assets'
-            verify_graph_assets(root)
+            verify_graph_assets(root, backend=backend)
             stage = 'Replit Secret presence'
-            require_secret_environment('chroma')
+            require_secret_environment(backend)
             print('Local graph preflight passed; external access checks await a reserved submission. No inference authorized yet.')
             return 0
         budget.check_ready()

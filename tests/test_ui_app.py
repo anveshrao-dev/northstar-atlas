@@ -46,7 +46,7 @@ class AppTests(unittest.TestCase):
         self.assertFalse(app.checkbox(key='paid_opt_in').value)
         self.assertNotIn('workflow', [widget.key for widget in app.selectbox])
 
-    def test_graph_operator_gate_enables_only_chroma_selection_without_opening_resources(self):
+    def test_graph_operator_gate_enables_selected_backend_without_opening_resources(self):
         with patch.dict(os.environ, NORTHSTAR_UI_ENABLE_LIVE='1', NORTHSTAR_UI_ENABLE_GRAPH='1',
                         NORTHSTAR_CONTROLLED_LIVE='1', NORTHSTAR_PRIVATE_PREVIEW_CONFIRMED='1',
                         NORTHSTAR_UI_ENABLE_PINECONE='1'):
@@ -58,6 +58,8 @@ class AppTests(unittest.TestCase):
             self.assertFalse(app.chat_input[0].disabled)
             self.assertTrue(any('full durable workflow reservation' in x.value for x in app.caption))
             app.selectbox(key='backend').set_value('pinecone').run()
+            self.assertFalse(app.chat_input[0].disabled)
+            app.checkbox(key='paid_opt_in').uncheck().run()
             self.assertTrue(app.chat_input[0].disabled)
             app.radio(key='experience').set_value('Offline demo').run()
             app.button(key='run_demo').click().run()

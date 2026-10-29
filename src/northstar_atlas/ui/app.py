@@ -126,7 +126,7 @@ def main() -> None:
             if workflow == LANGGRAPH_WORKFLOW and not graph_enabled:
                 st.warning('LangGraph live execution is disabled pending shared budget coordinator and security activation approval. No provider request will be sent.')
             elif workflow == LANGGRAPH_WORKFLOW:
-                st.caption('LangGraph requires Chroma and a full durable workflow reservation. Budget, pricing, evidence and private-access checks must pass before execution.')
+                st.caption('LangGraph requires a full durable workflow reservation. Budget, pricing, evidence and private-access checks must pass before execution.')
         mode = st.selectbox('Policy scope', ('approved_only', 'draft_review'), key='mode', disabled=pending,
                             format_func=lambda v: {'approved_only': 'Approved policies only',
                                                    'draft_review': 'Approved + proposed drafts'}[v])
@@ -182,7 +182,7 @@ def main() -> None:
     st.chat_input('Ask about a policy…', key='question', max_chars=MAX_QUESTION_CHARS,
                   disabled=(pending or (not demo and not (live_enabled and consent))
                             or (not demo and workflow == LANGGRAPH_WORKFLOW
-                                and (not graph_enabled or backend != 'chroma'))), on_submit=queue_chat)
+                                and not graph_enabled)), on_submit=queue_chat)
     if conversation.pending is not None:
         with st.spinner('Preparing demonstration…' if conversation.pending.demo else 'Retrieving evidence and preparing a validated response…'):
             conversation.run_pending(owner, consent=consent)

@@ -1,5 +1,9 @@
 # Controlled live semantic-graph wiring
 
+The later [Pinecone extension](Semantic-Graph-Pinecone.md) adds explicit Pinecone
+selection to the semantic profile. The Chroma-only boundaries and test counts
+below describe the original wiring; they are retained as historical results.
+
 ## Scope
 
 The optional semantic graph can now use the existing Nebius adapter through the
