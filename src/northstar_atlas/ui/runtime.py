@@ -10,8 +10,11 @@ from typing import Callable
 from northstar_atlas.evidence import CitationReference
 from northstar_atlas.ingestion.document_loader import DRAFT, RetrievalMode
 from northstar_atlas.llm import GenerationLimits, MODEL_ID
-from northstar_atlas.qa import PublicPresentation, QAFailure, QASuccess, open_qa_service
+from northstar_atlas.qa import PublicPresentation, QAFailure, QASuccess, open_qa_service, open_retriever
 from northstar_atlas.project import validate_project_root
+from northstar_atlas.vector_store.contracts import SearchHit, score_fields
+from northstar_atlas.vector_store.catalog import eligible
+from northstar_atlas.vector_store.records import IndexConfig, context_ids, metadata_for, validate_context
 
 LIMITS = GenerationLimits(context_tokens=32768, output_tokens=2048, margin_tokens=512)
 MAX_ATTEMPTS = 5
@@ -19,6 +22,7 @@ MAX_QUESTION_CHARS = 2000
 STANDARD_WORKFLOW = 'standard'
 LANGGRAPH_WORKFLOW = 'langgraph_semantic'
 LANGGRAPH_PROFILE = 'llm_routing_grading_semantic_v1'
+POLICY_SEARCH = 'Policy search — retrieval only'
 
 
 def graph_operator_authorized() -> bool:
@@ -52,6 +56,7 @@ ERRORS = {
     'budget_exhausted': 'The five-attempt allowance for this server process has been reached.',
     'interrupted': 'This submission was interrupted or its outcome is unknown. It will not be retried automatically.',
     'cleanup_failed': 'Resources could not be fully disconnected. Restart the server before live use.',
+    'search_failed': 'Verified policy evidence could not be retrieved. Check the existing local index and cached model, or try a shorter question. No LLM inference was attempted.',
 }
 
 
@@ -65,6 +70,7 @@ class PublicView:
     code: str | None = None
     presentation: PublicPresentation | None = None
     sources: tuple[CitationReference, ...] = ()
+    passages: tuple[SearchHit, ...] = ()
 
 
 def error_view(code: str) -> PublicView:
@@ -98,6 +104,41 @@ def project_result(result: QASuccess | QAFailure, mode: RetrievalMode) -> Public
                       presentation=presentation, sources=sources)
 
 
+def project_search(hits: tuple[SearchHit, ...], mode: RetrievalMode, as_of: date) -> PublicView:
+    """Expose exact verified passages, never an answer or a relevance threshold.
+
+    Source authenticity/publication checks belong to open_retriever/store.search.
+    Repeat eligibility and complete-family checks before publishing any passage.
+    """
+    try:
+        if (mode not in ('approved_only', 'draft_review') or type(as_of) is not date
+                or not isinstance(hits, tuple) or len(hits) > 5):
+            raise ValueError('invalid search result')
+        direct_ids, sources = set(), {}
+        for hit in hits:
+            if not isinstance(hit, SearchHit) or hit.chunk.chunk_id in direct_ids:
+                raise ValueError('invalid dense result')
+            direct_ids.add(hit.chunk.chunk_id)
+            score_fields(hit)
+            family = (hit.chunk, *hit.context)
+            if set(context_ids(hit.chunk)) != {c.chunk_id for c in hit.context}:
+                raise ValueError('unexpected sibling context')
+            validate_context(family, IndexConfig(hit.model, getattr(hit.chunk, 'token_limit', 256)))
+            for chunk in family:
+                metadata_for(chunk, hit.model)
+                if (not eligible(chunk, mode, as_of)
+                        or (chunk.chunk_id in sources and sources[chunk.chunk_id] != chunk)):
+                    raise ValueError('ineligible or conflicting evidence')
+                sources[chunk.chunk_id] = chunk
+        labels = tuple(dict.fromkeys(c.citation for c in sources.values()))
+        return PublicView('evidence', 'Retrieved policy passages — no LLM answer generated.' if hits
+                          else 'No eligible passages were returned. This does not establish that no applicable policy exists.',
+                          citations=labels, proposed=any(c.status == DRAFT for c in sources.values()),
+                          passages=hits)
+    except Exception:
+        return error_view('search_failed')
+
+
 @dataclass(frozen=True)
 class Submission:
     turn_id: str
@@ -107,6 +148,7 @@ class Submission:
     reference_date: date
     demo: bool = False
     workflow: str = STANDARD_WORKFLOW
+    retrieval_only: bool = False
 
     def valid(self) -> bool:
         return (bool(self.turn_id) and isinstance(self.question, str)
@@ -114,6 +156,8 @@ class Submission:
                 and self.mode in ('approved_only', 'draft_review')
                 and self.backend in ('chroma', 'pinecone')
                 and self.workflow in (STANDARD_WORKFLOW, LANGGRAPH_WORKFLOW)
+                and type(self.retrieval_only) is bool
+                and (not self.retrieval_only or (not self.demo and self.workflow == STANDARD_WORKFLOW))
                 and type(self.reference_date) is date)
 
 
@@ -125,10 +169,12 @@ class ResourceOwner:
     """
     def __init__(self, root: Path, *, live_enabled: bool = False,
                  pinecone_enabled: bool = False, opener: Callable | None = None,
-                 graph_enabled: bool = False, graph_opener: Callable | None = None, budget=None):
+                 graph_enabled: bool = False, graph_opener: Callable | None = None, budget=None,
+                 search_opener: Callable | None = None):
         self.root = validate_project_root(root)
         self.live_enabled, self.pinecone_enabled = live_enabled, pinecone_enabled
         self._opener = open_qa_service if opener is None else opener
+        self._search_opener = open_retriever if search_opener is None else search_opener
         self.graph_enabled = graph_enabled
         self._controlled_graph = graph_opener is None
         self._graph_opener = _live_graph_opener if graph_opener is None else graph_opener
@@ -163,6 +209,8 @@ class ResourceOwner:
     def submit(self, request: Submission, *, consent: bool) -> PublicView:
         if not request.valid() or request.demo:
             return error_view('invalid_input')
+        if request.retrieval_only:
+            return self._search_submit(request)
         if not self.live_enabled or consent is not True:
             return error_view('opt_in_required')
         if (request.workflow == LANGGRAPH_WORKFLOW
@@ -194,6 +242,42 @@ class ResourceOwner:
                 return result
             except (BudgetError, OSError, ValueError):
                 return error_view('budget_unavailable')
+        finally:
+            self.lock.release()
+
+    def _search_submit(self, request: Submission) -> PublicView:
+        """Local retrieval only: no QAService, provider, live counter or budget IO."""
+        if request.backend != 'chroma':
+            return error_view('backend_disabled')
+        if not self.lock.acquire(blocking=False):
+            return error_view('busy')
+        try:
+            if self._broken:
+                return error_view('cleanup_failed')
+            if request.turn_id in self._seen:
+                return error_view('duplicate')
+            self._seen.add(request.turn_id)
+            try:
+                # Recheck current source hashes even when model/store resources are cached.
+                from northstar_atlas.vector_store.preparation import corpus_snapshot
+                _, current = corpus_snapshot(self.root)
+                if self._service is None or self._workflow != POLICY_SEARCH:
+                    self._disconnect()
+                    if self._broken:
+                        return error_view('cleanup_failed')
+                    self._service = self._stack.enter_context(self._search_opener(self.root, 'chroma'))
+                    self._backend, self._workflow = 'chroma', POLICY_SEARCH
+                store, embedder, fingerprint = self._service
+                if fingerprint != current:
+                    raise ValueError('source corpus changed')
+                hits = store.search(request.question, embedder, corpus_fingerprint=current,
+                                    mode=request.mode, top_k=5, reference_date=request.reference_date)
+                if any(hit.model != embedder.model for hit in hits):
+                    raise ValueError('embedding identity mismatch')
+                return project_search(hits, request.mode, request.reference_date)
+            except Exception:
+                self._disconnect()
+                return error_view('search_failed')
         finally:
             self.lock.release()
 

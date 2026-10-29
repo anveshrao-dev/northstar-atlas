@@ -12,7 +12,7 @@ from northstar_atlas.ui.demo import SCENARIOS
 from northstar_atlas.project import ProjectRootError, contained_path, validate_project_root
 from northstar_atlas.ui.runtime import (
     Conversation, LANGGRAPH_WORKFLOW, MAX_QUESTION_CHARS, PublicView, ResourceOwner,
-    STANDARD_WORKFLOW, Submission,
+    POLICY_SEARCH, STANDARD_WORKFLOW, Submission,
     graph_operator_authorized,
 )
 
@@ -30,6 +30,27 @@ def render_view(view: PublicView) -> None:
     """Render dynamic text inertly: never execute model Markdown, HTML or URLs."""
     if view.kind == 'error':
         st.error(view.text)  # Fixed application strings only.
+        return
+    if view.kind == 'evidence':
+        st.caption('Policy search — retrieved evidence only')
+        st.text(view.text, width='stretch')
+        st.caption('Cosine similarity measures retrieval relevance, not answer confidence. Retrieved passages may not cover every applicable condition.')
+        if view.proposed:
+            st.warning('Proposed policy evidence — this is not an effective approved rule.')
+        for rank, hit in enumerate(view.passages, start=1):
+            st.subheader(f'Result {rank}')
+            st.text(hit.chunk.citation, width='stretch')
+            st.caption(f'Cosine similarity: {hit.cosine_similarity:.4f} · higher means closer in embedding space')
+            st.text(hit.chunk.text, width='stretch')
+            if hit.context:
+                with st.expander(f'Required policy context for result {rank}', expanded=True):
+                    st.caption('Required sibling passages; these are not additional ranked hits.')
+                    for sibling in hit.context:
+                        st.text(sibling.citation, width='stretch')
+                        st.text(sibling.text, width='stretch')
+            with st.expander(f'Source identity for result {rank}', expanded=False):
+                for chunk in (hit.chunk, *hit.context):
+                    st.text(f'{chunk.citation}\nChunk: {chunk.chunk_id}\nSource: {chunk.source_path.as_posix()}\nSHA-256: {chunk.content_hash}', width='stretch')
         return
     st.caption({'answer': 'Answer', 'clarify': 'Clarification needed', 'abstain': 'Evidence-limited abstention'}[view.kind])
     if view.proposed:
@@ -112,9 +133,10 @@ def main() -> None:
 
     with st.sidebar:
         st.header('Workspace')
-        experience = st.radio('Experience', ('Offline demo', 'Live Q&A'), key='experience', disabled=pending)
+        experience = st.radio('Experience', ('Offline demo', POLICY_SEARCH, 'Live Q&A'), key='experience', disabled=pending)
         demo = experience == 'Offline demo'
-        if demo:
+        retrieval_only = experience == POLICY_SEARCH
+        if demo or retrieval_only:
             workflow = STANDARD_WORKFLOW
         else:
             workflow = st.selectbox(
@@ -130,15 +152,19 @@ def main() -> None:
         mode = st.selectbox('Policy scope', ('approved_only', 'draft_review'), key='mode', disabled=pending,
                             format_func=lambda v: {'approved_only': 'Approved policies only',
                                                    'draft_review': 'Approved + proposed drafts'}[v])
-        backends = ('chroma', 'pinecone') if pinecone_enabled else ('chroma',)
+        backends = ('chroma', 'pinecone') if pinecone_enabled and not retrieval_only else ('chroma',)
+        if st.session_state.get('backend') not in backends:
+            st.session_state.backend = 'chroma'
         backend = st.selectbox('Retrieval backend', backends, key='backend', disabled=pending,
                                format_func=lambda v: 'Chroma · local' if v == 'chroma' else 'Pinecone · hosted')
-        if not pinecone_enabled:
+        if retrieval_only:
+            st.caption('Policy search uses the existing local Chroma index and cached MiniLM model. No hosted providers or LLM inference.')
+        elif not pinecone_enabled:
             st.caption('Pinecone is optional and disabled by the server.')
         elif backend == 'pinecone':
             st.warning('Connecting to Pinecone may incur read usage. Selecting it alone does not connect.')
         consent = st.checkbox('Enable paid answers for this session', key='paid_opt_in',
-                              disabled=demo or not live_enabled or pending)
+                              disabled=demo or retrieval_only or not live_enabled or pending)
         if os.environ.get('NORTHSTAR_CONTROLLED_LIVE') == '1':
             st.caption('Controlled live use requires a durable budget reservation. Limits persist across restarts. No automatic retries.')
         else:
@@ -154,6 +180,8 @@ def main() -> None:
 
     if demo:
         st.info('Offline demonstration — authored examples, not live retrieval or model responses. No API calls.')
+    elif retrieval_only:
+        st.info('Policy search — actual local retrieval, no generated answer. Local retrieval dependencies, a cached model and a verified index are required.')
     else:
         st.info('Each question is independent. Conversation history is display-only; include all needed details.')
     if mode == 'draft_review':
@@ -162,7 +190,7 @@ def main() -> None:
     def queue(question: str) -> None:
         conversation.queue(Submission(uuid4().hex, question, mode, backend,
                                       datetime.now(timezone.utc).date(), demo=demo,
-                                      workflow=workflow))
+                                      workflow=workflow, retrieval_only=retrieval_only))
 
     if demo:
         scenarios = tuple(s for s in SCENARIOS if mode == 'draft_review' or s.mode == 'approved_only')
@@ -180,11 +208,13 @@ def main() -> None:
         queue(st.session_state.question)
 
     st.chat_input('Ask about a policy…', key='question', max_chars=MAX_QUESTION_CHARS,
-                  disabled=(pending or (not demo and not (live_enabled and consent))
-                            or (not demo and workflow == LANGGRAPH_WORKFLOW
+                  disabled=(pending or (not demo and not retrieval_only and not (live_enabled and consent))
+                            or (not demo and not retrieval_only and workflow == LANGGRAPH_WORKFLOW
                                 and not graph_enabled)), on_submit=queue_chat)
     if conversation.pending is not None:
-        with st.spinner('Preparing demonstration…' if conversation.pending.demo else 'Retrieving evidence and preparing a validated response…'):
+        with st.spinner('Preparing demonstration…' if conversation.pending.demo else
+                        'Searching verified local policy evidence…' if conversation.pending.retrieval_only else
+                        'Retrieving evidence and preparing a validated response…'):
             conversation.run_pending(owner, consent=consent)
         st.rerun()  # Display stored results; pending has been consumed, never re-submit.
 
@@ -194,6 +224,8 @@ def main() -> None:
         with st.chat_message('assistant'):
             if turn.submission.demo:
                 origin = 'Offline demonstration'
+            elif turn.submission.retrieval_only:
+                origin = f'Policy search · local Chroma · as of {turn.submission.reference_date.isoformat()}'
             else:
                 workflow_label = ('LangGraph RAG' if turn.submission.workflow == LANGGRAPH_WORKFLOW
                                   else 'Standard RAG')

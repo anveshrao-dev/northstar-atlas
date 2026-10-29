@@ -76,6 +76,123 @@ class UIRuntimeTests(unittest.TestCase):
     def request(self, ident='one', backend='chroma', mode='approved_only'):
         return self.ui.Submission(ident, 'When?', mode, backend, date(2026, 10, 23))
 
+    def test_policy_search_does_not_require_live_consent_or_touch_budget(self):
+        self.assertIn('retrieval_only', self.ui.Submission.__dataclass_fields__)
+        from test_context import chunk, hit, AS_OF, MODEL
+        from northstar_atlas.vector_store.preparation import corpus_snapshot
+        from unittest.mock import Mock
+        fingerprint = corpus_snapshot(self.root)[1]
+        source = chunk(doc='HR-001', status=APPROVED, effective=AS_OF)
+        store = Mock(); store.search.return_value = (hit(source),)
+        budget = Mock(); budget.reserve.side_effect = AssertionError('ledger access forbidden')
+        closed = []
+        @contextmanager
+        def retrieval(root, backend):
+            self.assertEqual(backend, 'chroma')
+            try: yield store, Mock(model=MODEL), fingerprint
+            finally: closed.append(True)
+        owner = self.ui.ResourceOwner(self.root, opener=self.opener, search_opener=retrieval, budget=budget)
+        self.addCleanup(owner.close)
+        request = replace(self.request(), retrieval_only=True)
+        view = owner.submit(request, consent=False)
+        self.assertEqual(view.kind, 'evidence')
+        self.assertEqual(view.passages[0].chunk.text, source.text)
+        self.assertEqual(view.citations, ('HR-001 v1.0 §4.1 (approved, synthetic)',))
+        self.assertEqual(store.search.call_args.kwargs,
+            dict(corpus_fingerprint=fingerprint, mode='approved_only', top_k=5, reference_date=request.reference_date))
+        self.assertEqual(owner.attempts, 0); self.assertFalse(budget.mock_calls); self.assertFalse(self.opened)
+        self.assertEqual(owner.submit(request, consent=False).code, 'duplicate')
+        owner.close(); self.assertEqual(closed, [True])
+
+    def test_search_projection_rejects_ineligible_or_partial_sibling_evidence(self):
+        self.assertTrue(callable(getattr(self.ui, 'project_search', None)))
+        from test_context import chunk, hit, family, AS_OF
+        from datetime import timedelta
+        draft = chunk()
+        future = chunk(status=APPROVED, effective=AS_OF+timedelta(days=1))
+        first, second = family(chunk('Condition.\nRelated rule.\n'), (11,))
+        for hits, mode in (((hit(draft),), 'approved_only'), ((hit(future),), 'approved_only'),
+                           ((hit(first),), 'draft_review'),
+                           ((hit(first, (replace(second, content_hash='b'*64),)),), 'draft_review')):
+            with self.subTest(mode=mode):
+                result = self.ui.project_search(hits, mode, AS_OF)
+                self.assertEqual(result.kind, 'error'); self.assertFalse(result.passages)
+        view = self.ui.project_search((hit(first, (second,)),), 'draft_review', AS_OF)
+        self.assertEqual(view.kind, 'evidence'); self.assertTrue(view.proposed)
+        self.assertEqual(view.passages[0].context, (second,))
+
+    def test_policy_search_invalid_input_and_pinecone_never_open_resources(self):
+        self.assertIn('retrieval_only', self.ui.Submission.__dataclass_fields__)
+        from unittest.mock import Mock
+        retrieval = Mock(side_effect=AssertionError('retriever must not open'))
+        owner = self.ui.ResourceOwner(self.root, search_opener=retrieval, pinecone_enabled=True)
+        for change in (dict(question=' '), dict(question='x'*2001), dict(mode='unknown'),
+                       dict(reference_date=None), dict(demo=True), dict(workflow='langgraph_semantic'),
+                       dict(backend='pinecone')):
+            with self.subTest(change=change):
+                view = owner.submit(replace(self.request(), retrieval_only=True, **change), consent=True)
+                self.assertEqual(view.kind, 'error')
+        retrieval.assert_not_called(); self.assertEqual(owner.attempts, 0)
+
+    def test_search_failure_is_safe_and_does_not_retry(self):
+        from unittest.mock import Mock
+        retrieval = Mock(side_effect=RuntimeError('PRIVATE credential diagnostic'))
+        owner = self.ui.ResourceOwner(self.root, search_opener=retrieval)
+        self.addCleanup(owner.close)
+        request = replace(self.request(), retrieval_only=True)
+        view = owner.submit(request, consent=False)
+        self.assertEqual(view.code, 'search_failed')
+        self.assertNotIn('PRIVATE', str(view)); self.assertFalse(view.passages)
+        self.assertEqual(owner.submit(request, consent=False).code, 'duplicate')
+        self.assertEqual(retrieval.call_count, 1); self.assertEqual(owner.attempts, 0)
+
+    def test_empty_search_and_invalid_scores_do_not_become_policy_answers(self):
+        from test_context import chunk, hit, AS_OF
+        empty = self.ui.project_search((), 'approved_only', AS_OF)
+        self.assertEqual(empty.kind, 'evidence'); self.assertFalse(empty.passages)
+        self.assertIn('does not establish', empty.text)
+        source = chunk()
+        for hits in ((replace(hit(source), cosine_distance=float('nan')),),
+                     (hit(source), hit(source)), tuple(hit(replace(source, chunk_id=str(i))) for i in range(6))):
+            view = self.ui.project_search(hits, 'draft_review', AS_OF)
+            self.assertEqual(view.kind, 'error'); self.assertFalse(view.passages)
+
+    def test_search_reuses_resources_without_consuming_live_allowance(self):
+        from unittest.mock import Mock
+        from test_context import MODEL
+        from northstar_atlas.vector_store.preparation import corpus_snapshot
+        fingerprint = corpus_snapshot(self.root)[1]
+        store = Mock(); store.search.return_value = ()
+        opened, closed = [], []
+        @contextmanager
+        def retrieval(root, backend):
+            opened.append(backend)
+            try: yield store, Mock(model=MODEL), fingerprint
+            finally: closed.append(backend)
+        owner = self.ui.ResourceOwner(self.root, search_opener=retrieval)
+        self.addCleanup(owner.close)
+        owner.attempts = 5
+        for i in range(7):
+            view = owner.submit(replace(self.request(str(i)), retrieval_only=True), consent=False)
+            self.assertEqual(view.kind, 'evidence')
+        self.assertEqual(opened, ['chroma']); self.assertEqual(store.search.call_count, 7)
+        self.assertEqual(owner.attempts, 5)
+        owner.close(); self.assertEqual(closed, ['chroma'])
+
+    def test_search_busy_and_session_duplicates_do_not_trigger_retrieval(self):
+        from unittest.mock import Mock
+        retrieval = Mock(side_effect=AssertionError('must not open'))
+        owner = self.ui.ResourceOwner(self.root, search_opener=retrieval)
+        request = replace(self.request(), retrieval_only=True)
+        with owner.lock:
+            self.assertEqual(owner.submit(request, consent=False).code, 'busy')
+        conversation = self.ui.Conversation()
+        conversation.started.add(request.turn_id)
+        conversation.pending = request
+        conversation.run_pending(owner, consent=False)
+        self.assertEqual(conversation.history[-1].view.code, 'interrupted')
+        self.assertFalse(retrieval.called)
+
     def graph_request(self, ident='graph-one', backend='chroma', mode='draft_review'):
         return replace(self.request(ident, backend, mode), workflow='langgraph_semantic')
 

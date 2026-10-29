@@ -46,6 +46,84 @@ class AppTests(unittest.TestCase):
         self.assertFalse(app.checkbox(key='paid_opt_in').value)
         self.assertNotIn('workflow', [widget.key for widget in app.selectbox])
 
+    def test_policy_search_allows_free_text_without_paid_opt_in(self):
+        from unittest.mock import Mock
+        from test_context import chunk, hit, AS_OF, MODEL
+        from northstar_atlas.ingestion.document_loader import APPROVED
+        from northstar_atlas.vector_store.preparation import corpus_snapshot
+        fingerprint = corpus_snapshot(self.root)[1]
+        raw = 'Actual fixture passage <script>do not execute</script>'
+        source = chunk(raw, doc='HR-001', status=APPROVED, effective=AS_OF)
+        store = Mock(); store.search.return_value = (hit(source),)
+        @contextmanager
+        def retrieval(root, backend):
+            self.assertEqual(backend, 'chroma')
+            yield store, Mock(model=MODEL), fingerprint
+        with patch('northstar_atlas.ui.runtime.open_retriever', side_effect=retrieval):
+            app = self.app()
+            self.assertIn('Policy search — retrieval only', app.radio(key='experience').options)
+            app.radio(key='experience').set_value('Policy search — retrieval only').run()
+            self.assertFalse(app.chat_input[0].disabled)
+            self.assertTrue(app.checkbox(key='paid_opt_in').disabled)
+            self.assertNotIn('workflow', [widget.key for widget in app.selectbox])
+            app.chat_input[0].set_value('An arbitrary enterprise-policy question?').run()
+            self.assertFalse(app.exception)
+            self.assertEqual(store.search.call_count, 1)
+            self.assertIn(raw, [x.value for x in app.text])
+            self.assertTrue(any(source.citation in x.value for x in app.text))
+            self.assertTrue(any('0.8000' in x.value for x in app.caption))
+            self.assertTrue(any('not answer confidence' in x.value for x in app.caption))
+            self.assertFalse(any(raw in x.value for x in app.markdown))
+            app.run(); self.assertEqual(store.search.call_count, 1)
+            self.assertEqual(app.session_state['conversation'].history[-1].view.kind, 'evidence')
+            app.radio(key='experience').set_value('Live Q&A').run()
+            self.assertTrue(app.chat_input[0].disabled)
+
+    def test_search_renders_proposed_siblings_and_withholds_ineligible_results(self):
+        from unittest.mock import Mock
+        from test_context import chunk, family, hit, MODEL
+        from northstar_atlas.vector_store.preparation import corpus_snapshot
+        fingerprint = corpus_snapshot(self.root)[1]
+        first, second = family(chunk('Condition.\nRelated rule.\n', doc='PLAT-001', section='6.1'), (11,))
+        store = Mock(); store.search.return_value = (hit(first, (second,)),)
+        @contextmanager
+        def retrieval(root, backend):
+            yield store, Mock(model=MODEL), fingerprint
+        with patch('northstar_atlas.ui.runtime.open_retriever', side_effect=retrieval):
+            app = self.app()
+            app.radio(key='experience').set_value('Policy search — retrieval only').run()
+            app.selectbox(key='mode').set_value('draft_review').run()
+            app.chat_input[0].set_value('Which approvals?').run()
+            self.assertFalse(app.exception)
+            self.assertTrue(any('Proposed policy evidence' in x.value for x in app.warning))
+            context = next(x for x in app.expander if x.label == 'Required policy context for result 1')
+            self.assertTrue(context.proto.expanded)
+            # Streamlit's text element removes outer whitespace; stored evidence stays exact.
+            self.assertIn(second.text.strip(), [x.value for x in context.text])
+            self.assertEqual(app.session_state['conversation'].history[-1].view.passages[0].context[0].text,
+                             second.text)
+            self.assertTrue(any(first.chunk_id in x.value for x in app.text))
+            app.button(key='clear_history').click().run()
+            app.selectbox(key='mode').set_value('approved_only').run()
+            app.chat_input[0].set_value('Approved rules?').run()
+            self.assertTrue(app.error)
+            self.assertFalse(any('Related rule.' in x.value for x in app.text))
+            self.assertEqual(store.search.call_args.kwargs['mode'], 'approved_only')
+
+    def test_search_is_local_even_when_pinecone_and_live_ui_are_enabled(self):
+        with patch.dict(os.environ, NORTHSTAR_UI_ENABLE_LIVE='1', NORTHSTAR_UI_ENABLE_PINECONE='1'):
+            app = self.app()
+            app.radio(key='experience').set_value('Live Q&A').run()
+            app.selectbox(key='backend').set_value('pinecone').run()
+            app.checkbox(key='paid_opt_in').check().run()
+            app.radio(key='experience').set_value('Policy search — retrieval only').run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.selectbox(key='backend').value, 'chroma')
+            self.assertEqual(app.selectbox(key='backend').options, ['Chroma · local'])
+            self.assertTrue(app.checkbox(key='paid_opt_in').disabled)
+            self.assertFalse(app.chat_input[0].disabled)
+            self.assertTrue(any('No hosted providers' in x.value for x in app.caption))
+
     def test_graph_operator_gate_enables_selected_backend_without_opening_resources(self):
         with patch.dict(os.environ, NORTHSTAR_UI_ENABLE_LIVE='1', NORTHSTAR_UI_ENABLE_GRAPH='1',
                         NORTHSTAR_CONTROLLED_LIVE='1', NORTHSTAR_PRIVATE_PREVIEW_CONFIRMED='1',
