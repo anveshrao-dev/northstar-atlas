@@ -169,4 +169,3 @@ class PineconeSemanticGraphTests(unittest.TestCase):
         self.assertFalse(result.accepted)
         self.assertEqual(result.public.code, 'configuration_failed')
         self.assertFalse(provider.calls)
-
