@@ -3,9 +3,24 @@
 The existing Live Q&A interface accepts arbitrary enterprise-policy questions,
 but a one-shot diagnostic approval binds one exact question and ledger snapshot.
 A separate batch approval now permits five private Standard RAG submissions while
-preserving that one-shot behavior. This implementation has only been exercised
-offline with synthetic ledgers and mocked providers. No live batch is approved,
-applied or executed by its presence in source.
+preserving that one-shot behavior. The initial implementation checkpoint below
+used synthetic ledgers and mocked providers. No live batch is approved, applied
+or executed merely by its presence in source.
+
+## Subsequent controlled demonstration — 2026-10-29
+
+The owner verified interactive Standard RAG on Replit with Pinecone and Nebius,
+including accepted cited answers, an evidence-limited abstention and a withheld
+HTTP 200 response-envelope validation failure. The precise envelope defect
+remains unresolved; the diagnostics do not establish truncation. This live
+evidence is separate from the offline test results below and does not establish
+successful semantic-LangGraph execution or a fifteen-question live benchmark.
+Batch exhaustion and a separately approved extension were reported. No current
+allowance, deployment identity or private accounting records are published here.
+
+See the [provider diagnostic contract](Provider-Failure-Diagnostics.md) for the
+sanitized failure categories and their limits. An HTTP success status does not
+establish an acceptable response envelope or a validated policy answer.
 
 ## Authority and accounting
 
@@ -91,17 +106,23 @@ Pinecone integrity checks are retained. Service cleanup and ledger settlement mu
 finish before the typed `.public` result is durably captured under private
 `.local/linear-demo-results/`. Only then may the UI project the result. Formatting
 errors cannot invoke QA again. Safe failures never publish rejected candidates.
+The [result-capture report](Controlled-Pinecone-Demonstration.md) describes the
+typed public-result boundary and persistence-before-presentation behavior.
 
 The current implementation opens resources per submission, rather than caching
 reservation-bound providers across questions. This avoids stale permits but may
-increase model/loading latency. These costs have not been measured live.
+increase model/loading latency. The initial offline tests did not measure these
+costs live, and the later demonstration summary supplies no latency benchmark.
 
 Outside explicitly activated batch Live Q&A, existing UI defaults and behavior
 remain unchanged. Offline authored demo remains the initial selection. Policy
 search remains retrieval-only. LangGraph is not authorized by a batch plan.
 The offline launcher, Replit workflow, dependencies and UI-only export are unchanged.
 
-## Operator sequence (not performed)
+## Operator sequence
+
+This procedure was documented without real ledger changes in the initial offline
+implementation task. Later demonstration activity does not authorize another run.
 
 Use the existing dedicated authority configuration and independently review the
 actual current state. The example commands contain placeholders, not deployment
@@ -116,7 +137,7 @@ identity or pricing. Run from the authorized checkout with the existing Python
    ```sh
    .venv/bin/python -B -m northstar_atlas.demo_batch --root "$PWD" prepare \
      --batch-id '<unique-batch-id>' --previous-plan '<prior-plan-sha256>' \
-     --confirmed-billing-scope northstar-atlas-week2-demo \
+     --confirmed-billing-scope '<existing-reviewed-demo-billing-scope>' \
      --approve-max-attempts 7 --approve-max-reserved-usd 0.100000 \
      --verified-pricing-sha256 '<independently-verified-active-price-digest>' \
      --writers-stopped

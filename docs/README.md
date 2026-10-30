@@ -1,6 +1,8 @@
 # Architecture, experiments and documentation
 
-This is the public engineering overview for the local Northstar Atlas MVP.
+This is the public engineering overview for Northstar Atlas, an independent
+enterprise policy Q&A application using six synthetic policies, and its
+controlled hosted demonstration.
 The [project README](../README.md) contains current operation and setup guidance.
 Decision records below describe the state at the time of each experiment or
 design. Dated proposals and prices are historical, not current operating guidance.
@@ -22,8 +24,9 @@ dated contents retain the original methodology and findings.
 | Context builder | Validate eligibility and source relationships, include required siblings, deduplicate, group evidence and budget labels/content together. Missing critical context blocks acceptance. |
 | Generation/grounding | Provider-independent structured requests; Nebius adapter with bounded transport behavior. Validate response shape, supplied citations, quotation spans and caller-reviewed requirements; do not confuse structural validation with semantics. |
 | QAService | Reuse initialized retrieval/model/provider resources; return immutable public success/error models separately from developer diagnostics. Support answer, clarify and abstain without treating infrastructure errors as policy claims. |
-| Streamlit | Display validated statements, source labels and optional evidence/validation details. Default to authored offline demonstrations; require server and session opt-in for paid questions. |
+| Streamlit | Display validated statements, source labels and optional evidence/validation details. Keep authored Offline demo, real Chroma Policy Search without generation, and interactive Live Q&A separate. Require server and session opt-in for paid questions. |
 | Controlled-live accounting | Shared version-2 durable ledger reserves one linear call or the complete seven-call semantic workflow before provider opening. Single-use stage permits, current pricing, private-access checks and explicit operator authorization are required. |
+| Interactive batches and result capture | Separately approved five-submission Standard RAG/Pinecone batches share durable limits across restarts. Exhaustion disables submission; no automatic retries. Settle accounting and durably record the typed public result before display. |
 
 The public result's structured presentation is additive. Legacy rendered `text`
 remains unchanged, while exact accepted statements and quotations are exposed
@@ -31,10 +34,12 @@ separately. The UI does not parse, summarize or rewrite a validated answer strin
 Older history retains its complete legacy text. Rejected model candidates never
 become public presentation fields.
 
-The Streamlit workflow selector and controlled Chroma graph wiring are implemented
-and offline validated. Live graph use remains disabled by default and has not been
-verified on Replit or against a real provider. The UI's process-local question
-counter is separate from durable provider-call accounting. The semantic checker
+The Streamlit workflow selector and semantic graph wiring for both Chroma and
+Pinecone are implemented and offline validated. Live graph use remains disabled
+by default; successful end-to-end live completion has not been verified. Controlled
+interactive Standard RAG with Pinecone and Nebius has been demonstrated separately.
+The UI's process-local question counter is separate from controlled-live durable
+provider-call accounting and batch limits. The semantic checker
 cannot override deterministic failures, establish support from unretrieved evidence
 or replace caller-reviewed obligation coverage.
 
@@ -106,6 +111,13 @@ seconds in those Mac runs. The reviewed Terraform set was caller-supplied; the
 ordinary UI does not infer it. The retention result did not invent a duration,
 but structural validation alone does not establish entailment of all paraphrases.
 
+The owner-verified controlled Replit demonstration on 2026-10-29 used interactive
+Pinecone/Nebius Standard RAG. Outcomes included accepted cited answers, an
+evidence-limited abstention and a withheld HTTP 200 response-envelope validation
+failure. Sanitized diagnostics do not establish the precise envelope defect;
+truncation is not confirmed. These observations are not a live fifteen-question
+benchmark, a current budget balance or a successful semantic-graph run.
+
 The historical retrieval comparison measured mean adapter latency of 21.85 ms
 for Chroma and 301.66 ms for Pinecone. It used one alternating pass, identical
 query embeddings and scoring, and a fixed reference date. These are adapter
@@ -126,8 +138,9 @@ production guarantee.
 | Managed retrieval | [Pinecone design](decisions/M3.1-Pinecone-Design.md), [offline adapter](decisions/M3.2-Pinecone-Offline-Adapter.md), [backend comparison](decisions/M3.4-Chroma-Pinecone-Comparison.md) |
 | Generation preparation | [Provider decision](decisions/M4.1-LLM-Provider-Design.md), [context/citations](decisions/M4.2-Context-Citation-Design.md) |
 | Lexical and hybrid retrieval | [Design](decisions/M5.1-Hybrid-Retrieval-Design.md), [implementation and results](decisions/M5.2-Hybrid-Retrieval-Results.md) |
-| Graph profiles and UI integration | [Original bounded design](decisions/M6.1-LangGraph-Design.md), [dependency resolution, routing/grading, semantic checking and integration history](decisions/M6.2-LangGraph-Implementation.md) |
-| Controlled live execution | [Shared durable budget](decisions/Shared-Durable-Live-Budget.md), [conditional graph wiring and activation prerequisites](decisions/Controlled-Live-Graph-Wiring.md) |
+| Graph profiles and UI integration | [Original bounded design](decisions/M6.1-LangGraph-Design.md), [dependency resolution, routing/grading, semantic checking and integration history](decisions/M6.2-LangGraph-Implementation.md), [Pinecone semantic graph support](decisions/Semantic-Graph-Pinecone.md) |
+| Controlled live execution | [Shared durable budget](decisions/Shared-Durable-Live-Budget.md), [conditional graph wiring and activation prerequisites](decisions/Controlled-Live-Graph-Wiring.md), [interactive five-submission batches](decisions/Interactive-Standard-RAG-Batch.md), [one-shot execution and durable result capture](decisions/Controlled-Pinecone-Demonstration.md), [sanitized provider diagnostics](decisions/Provider-Failure-Diagnostics.md) |
+| Retrieval-only interface | [Policy Search](decisions/Policy-Search-Retrieval-Only.md) |
 | Final engineering evaluation | [Retrieval, graph behavior and limitations](decisions/Retrieval-and-Bounded-Graph-Evaluation.md) |
 
 The full M3.3, M4.3, M4.4, M8.1 and M8.2 operational histories and the publication
@@ -143,14 +156,17 @@ Runtime root guards now share a source-anchored/operator-configured root validat
 and Pinecone account identity resides in ignored target configuration with a
 separate index/key-bound owner confirmation. Source/manifest verification and
 immutable publication checks remain intact. Alternate checkout fixtures pass;
-this does not establish that a fresh install or Replit import works today.
+this does not establish fresh-install reproducibility on every hosted environment.
 Environment-only Pinecone credentials, the shared durable budget and conditional
 live graph wiring are implemented and offline validated. Linux CPU packaging,
 model provisioning, durable retrieval/ledger state and private-access guarantees
-still require hosted validation. Live graph activation requires separate approval;
+still require deployment-specific validation beyond the demonstrated controlled
+Standard RAG session. Live graph activation requires separate approval;
 the offline UI-only environment cannot run it. The publication plan remains
 private-first, with all included material suitable for eventual public release.
-A license and public release remain separate decisions;
-private repository visibility does not replace publication review.
+Public visibility is intended for portfolio and evaluation purposes; it does not
+grant a general reuse license for original project code. Third-party components
+remain subject to their own licenses, and applicable law and platform terms
+still apply. Changing repository visibility remains a separate reviewed action.
 Source policies, evaluation data and dependency pins remain unchanged by
 publication preparation and the subsequent portability correction.

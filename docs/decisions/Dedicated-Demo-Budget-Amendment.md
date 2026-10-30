@@ -8,19 +8,27 @@ live execution requires a separate approval afterward.
 
 ## Accepted source and allowed changes
 
-`northstar_atlas.demo_budget_amendment` requires the existing billing scope
-`northstar-atlas-week2-demo`, a one-slot policy, the unchanged $0.100000 cumulative
+`northstar_atlas.demo_budget_amendment` requires the existing dedicated demo billing
+scope, a one-slot policy, the unchanged $0.100000 cumulative
 estimated-cost ceiling, and exactly one consumed LINEAR workflow whose reserved
 estimate is $0.003687. The first workflow must have one issued generator call
 and be closed or uncertain, with no pending writer. Its complete record,
 including usage, status and original pricing, is preserved. An uncertain call
 is not refunded or reclassified.
 
-The narrowly supported source has `legacy: null` and no existing diagnostic
-window or request restriction. Existing windows, unknown layouts, pending
-settlement markers, and incompatible histories fail closed; they are not removed
-or bypassed. The actual deployed demo ledger was not inspected in this task.
-Compatibility must be checked against this contract before any real application.
+The narrowly supported source permits `legacy: null` or a preserved zero-attempt
+version-1 donor that passes the existing authoritative ledger validation. The
+complete legacy record is preserved without modification; nonempty, malformed
+or incompatible legacy histories remain rejected. An empty attempt list alone
+does not establish compatibility: authoritative schema, identity and accounting
+validation runs first. The [legacy-donor regression tests](../../tests/test_demo_budget_amendment.py)
+cover transition-produced donors, invalid histories, candidate preservation and
+duplicate rejection. A source-byte backup preserves
+the original serialized ledger. No existing diagnostic window or request
+restriction is permitted. Existing windows, unknown layouts and pending settlement
+markers fail closed; they are not removed or bypassed. The original implementation
+review did not inspect the deployed ledger. Compatibility must be checked against
+this contract before any real application.
 
 The candidate changes only:
 
@@ -110,7 +118,7 @@ alone does not authorize using them on a real ledger or invoking inference.
 ```bash
 python -m northstar_atlas.demo_budget_amendment --root "$APP_ROOT" prepare \
   --contract "$APP_ROOT/.local/operator/demo-request.json" \
-  --confirmed-billing-scope northstar-atlas-week2-demo \
+  --confirmed-billing-scope '<existing-reviewed-demo-billing-scope>' \
   --approve-max-attempts 2 --approve-max-reserved-usd 0.100000 \
   --verified-pricing-sha256 "$VERIFIED_PRICING_SHA256" --writers-stopped
 ```
@@ -141,7 +149,7 @@ uses one transport attempt, records the typed public result after settlement,
 and never retries after failure. Subsequent requests are rejected, even if the
 new invocation fails before transport. No new ID is generated automatically.
 
-## Offline validation and limitations
+## Historical offline validation and limitations
 
 Focused synthetic tests exercise exact history and cost conservation, private
 backups, dry-run behavior, approval and request binding, current/appended pricing,

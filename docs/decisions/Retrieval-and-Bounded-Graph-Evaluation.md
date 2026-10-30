@@ -1,10 +1,12 @@
-# Final Retrieval and Orchestration Evaluation
+# Retrieval and Bounded-Graph Evaluation
 
 **Date:** 2026-10-24.
 
 **Status:** Local evaluation complete; engineering handoff findings ready for review.
 
-**Scope:** Existing retrieval strategies and optional LangGraph orchestration. No application changes or hosted inference.
+**Scope:** Retrieval strategies and the original optional `bounded_v1` LangGraph
+profile as of 2026-10-24. No application changes or hosted inference. This report
+does not evaluate the later LLM routing, grading or semantic-checking profiles.
 
 ## 1. Findings and handoff assessment
 
@@ -17,7 +19,12 @@ Two important limitations remain:
 - Nonempty evidence is sufficient for ordinary-query routing, even when cross-policy evidence is missing. Such queries retain `coverage.status = not_assessed`; the graph does not automatically establish relevance, completeness, ambiguity, or unsupportedness.
 - An adversarial fake claim inventing an approved retention duration, paired with a genuine quotation from the proposed Compliance policy, **passed ordinary-query structural validation**. The evaluator rejects its semantic assessment. Citation membership and quotation provenance do not enforce entailment or prevent contradictory free-form wording. This is a material limitation for unrestricted policy guidance, not a successful answer.
 
-The Week 2 engineering evaluation is complete and supports a controlled, clearly labeled MVP handoff. It does **not** establish readiness for unrestricted authoritative enterprise advice or production release. Keep the existing linear QAService/Streamlit defaults; treat hybrid and graph as explicit experiments. No Week 3 implementation or deployment was performed.
+This engineering evaluation supports a controlled, clearly labeled MVP handoff.
+It does **not** establish readiness for unrestricted authoritative enterprise
+advice or production release. The findings support retaining the linear
+QAService/Streamlit defaults while evaluating hybrid and graph behavior explicitly.
+No deployment was performed as part of this evaluation. Later implementation and
+live observations are documented separately in the [engineering guide](../README.md).
 
 ## 2. Frozen inputs and provenance
 
@@ -269,7 +276,11 @@ Recommended future experiments, **not implemented**:
 
 The small development dataset has been inspected repeatedly and is not a held-out estimate of enterprise performance. There are no statistical confidence claims. No reranker, alternative model, graph LLM planner, new cloud component or deployment change was introduced.
 
-## 9. Validation and reproducible commands
+## 9. Historical validation and reproducible commands
+
+The test counts and commands below belong to the 2026-10-24 evaluation checkpoint.
+They do not validate the later semantic graph or establish current live-provider
+behavior. The recorded retrieval measurements remain unchanged.
 
 **Complete existing suite: 527 tests passed, 0 failures, 0 errors, 0 skips, 115.75 s.** Cached-model integration tests were enabled. The M1.8 validator passed all fifteen IDs, 3/6/3/3 categories, source hashes, manifest pin, evidence references, modes and expected behaviors. Validator success remains structural, not semantic.
 
