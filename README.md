@@ -20,20 +20,9 @@ live execution has not been verified. All policies are synthetic.
 
 ## How it works
 
-```text
-Preparation
-Six policy documents + verified corpus manifest
-  → heading-aware chunking → token-aware refinement
-  → 189 MiniLM embedding records → Chroma or Pinecone
+![Standard RAG architecture: six synthetic policies become 189 MiniLM records; eligible evidence supports controlled Nebius generation and citation validation.](docs/assets/standard-rag-architecture.png)
 
-Standard RAG
-Question + policy mode + reference date
-  → eligible top-five retrieval
-  → required sibling passages + source checks + context budget
-  → Nebius answer generation
-  → structured response, citation, quotation and status validation
-  → answer, clarification or abstention in Streamlit
-```
+*The controlled Pinecone path is shown; Chroma remains the default local backend.*
 
 The linear `QAService` defaults to dense retrieval and local Chroma; Pinecone is
 explicitly selectable. BM25 and dense/BM25 Reciprocal Rank Fusion are optional.
@@ -86,6 +75,8 @@ truncation.
 **`draft_review`** also admits proposed drafts, preserving their labels in evidence
 and responses. A draft is not an effective company rule, even when an approved
 policy refers to it.
+
+![Policy governance: approved-only excludes drafts; draft-review retains proposed labels. Evidence validation leads to cited answers, evidence-limited abstentions or withheld failures, without proving semantic correctness.](docs/assets/policy-governance.png)
 
 Retrieved text is treated as untrusted evidence. Source hashes, citation identity,
 version, status and required siblings are checked before generation. Context
@@ -211,6 +202,8 @@ The [frozen 15-question dataset](evaluations/README.md) covers precise HR lookup
 cross-policy scenarios, ambiguous questions and unsupported-value requests. The
 24 October 2026 retrieval evaluation used the same source snapshot and an explicit
 eligibility reference date.
+
+![Expanded evidence recall across 15 questions: Dense 64.67%, BM25 66.78%, Hybrid RRF 70.44%. Every strategy fully covers six questions; retrieval coverage is not answer accuracy.](docs/assets/retrieval-recall-comparison.png)
 
 | Strategy | Direct Recall@5 | Recall after sibling expansion | Full expanded evidence coverage |
 | --- | ---: | ---: | ---: |
