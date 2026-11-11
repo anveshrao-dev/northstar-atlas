@@ -92,6 +92,10 @@ def _validate_demo_plan(budget, plan):
 
 def _validate_plan_fields(budget, plan):
     """Historical structure only. NOT authority to use an old filesystem identity."""
+    if isinstance(plan, dict) and plan.get('kind') == 'v2-unused-demo-batch-pricing-renewal':
+        from .demo_batch_pricing import validate_renewal_plan
+        validate_renewal_plan(budget, plan)
+        return
     if isinstance(plan, dict) and plan.get('kind') == 'v2-five-question-demo-batch':
         from .demo_batch import validate_batch_plan
         validate_batch_plan(budget, plan)
@@ -136,7 +140,8 @@ def validate_plan(budget, plan):
     _validate_plan_fields(budget, plan)
     _require(plan['directory_identity'] == identity(budget.directory)
              and plan['lock_identity'] == identity(budget.lock_path))
-    if plan['kind'] in (RECOVERY_KIND, DEMO_KIND, 'v2-five-question-demo-batch'):
+    if plan['kind'] in (RECOVERY_KIND, DEMO_KIND, 'v2-five-question-demo-batch',
+                        'v2-unused-demo-batch-pricing-renewal'):
         _require(plan['authority_identity'] == identity(budget.authority_root)
                  and plan['local_identity'] == identity(budget.authority_root / '.local'))
 
@@ -164,7 +169,7 @@ def read_window(budget, approval):
 
 
 def check_request(budget, plan, request, corpus, ledger):
-    if plan['kind'] == 'v2-five-question-demo-batch':
+    if plan['kind'] in ('v2-five-question-demo-batch', 'v2-unused-demo-batch-pricing-renewal'):
         from .demo_batch import check_batch_request
         check_batch_request(budget, plan, request, corpus, ledger)
         return

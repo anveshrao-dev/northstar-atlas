@@ -69,13 +69,17 @@ def _cost(price):
 def _progress(budget, plan, ledger):
     """Under the ledger lock: approved immutable prefix plus bounded new flows."""
     validate_plan(budget, plan)
-    _require(plan['kind'] == KIND and budget.policy == BudgetPolicy(plan['new_cap'])
+    from .demo_batch_pricing import KIND as RENEWAL_KIND, load_baseline
+    _require(plan['kind'] in (KIND, RENEWAL_KIND) and budget.policy == BudgetPolicy(plan['new_cap'])
              and plan['request'] == batch_contract(budget, plan['request']['batch_id']))
-    directory = budget.directory / ('demo-batch-' + sha(_encode(plan)))
-    _private_directory(budget, directory)
-    raw = _read_private(budget, directory/'candidate.v2.json')
-    _require(sha(raw) == plan['candidate_sha256'])
-    base = _decode(raw)
+    if plan['kind'] == RENEWAL_KIND:
+        base, _, _ = load_baseline(budget, plan)
+    else:
+        directory = budget.directory / ('demo-batch-' + sha(_encode(plan)))
+        _private_directory(budget, directory)
+        raw = _read_private(budget, directory/'candidate.v2.json')
+        _require(sha(raw) == plan['candidate_sha256'])
+        base = _decode(raw)
     budget._validate_document(base)  # Current price and authoritative schema remain mandatory.
     _, prices, state = budget._validate_document(ledger)
     count = len(base['workflows'])
